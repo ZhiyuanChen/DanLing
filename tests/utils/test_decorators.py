@@ -30,32 +30,22 @@ class TestCatch:
 
         func()
 
-    def test_interrupt(self):
+    @pytest.mark.parametrize("error", [KeyboardInterrupt, SystemExit])
+    def test_control_flow(self, error):
         @decorators.catch()
         def func():
-            raise KeyboardInterrupt("test")
+            raise error("test")
 
-        with pytest.raises(KeyboardInterrupt):
+        with pytest.raises(error):
             func()
 
-    def test_exit(self):
-        @decorators.catch()
-        def func():
-            raise SystemExit("test")
-
-        with pytest.raises(SystemExit):
-            func()
-
-    def test_raise(self):
-        @decorators.catch(FileExistsError)
-        def func():
-            raise FileNotFoundError("test")
-
-        with pytest.raises(FileNotFoundError):
-            func()
-
-    def test_exclude(self):
-        @decorators.catch(exclude=FileNotFoundError)
+    @pytest.mark.parametrize(
+        "options",
+        [{"error": FileExistsError}, {"exclude": FileNotFoundError}],
+        ids=["uncaught", "excluded"],
+    )
+    def test_propagates(self, options):
+        @decorators.catch(**options)
         def func():
             raise FileNotFoundError("test")
 

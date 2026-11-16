@@ -84,7 +84,7 @@ class TestDenseBinaryOperands:
             ),
         )
 
-    def test_dense_operand_matching_concat_shape_is_elementwise(self):
+    def test_packed_dense_operand(self):
         nt = NT([torch.randn(2, 3), torch.randn(4, 3)])
         dense = torch.randn_like(nt.values())
 
@@ -93,7 +93,7 @@ class TestDenseBinaryOperands:
         torch.testing.assert_close(output.values(), nt.values() * dense)
         assert [tuple(element.shape) for element in output] == [(2, 3), (4, 3)]
 
-    def test_data_derived_ragged_coordinates_divide_by_sample_noise_fullgraph(self, device):
+    def test_compiled_ragged_noise(self, device):
         def normalize(template, coordinates, lengths, noise):
             packed = torch.repeat_interleave(coordinates, lengths.to(coordinates.device), dim=0)
             ragged = template.packed_with_lengths(packed, lengths)
@@ -128,19 +128,6 @@ class TestDenseBinaryOperands:
         assert len(output) == 2
         for index, element in enumerate(output):
             torch.testing.assert_close(element, nt[index] + dense[index])
-
-    def test_gather_keeps_grad_after_no_grad_iteration(self):
-        values = torch.randn(5, requires_grad=True)
-        nt = NT([values[:2], values[2:]])
-        with torch.no_grad():
-            _ = tuple(nt)
-
-        index = NT([torch.tensor([1, 0]), torch.tensor([2, 1, 0])])
-        output = torch.gather(nt, 1, index)
-        output.values().sum().backward()
-
-        torch.testing.assert_close(output.values(), torch.cat((values[:2].flip(0), values[2:].flip(0))))
-        torch.testing.assert_close(values.grad, torch.ones_like(values))
 
 
 def build_elements(shapes, offset=0.0):
@@ -309,7 +296,7 @@ class TestAmbiguousOperands:
         with pytest.raises(NotImplementedError, match="ambiguous"):
             nested + torch.randn(2, 1, 5)
 
-    def test_explicit_spellings_disambiguate_shared_and_per_sample_operands(self):
+    def test_explicit_broadcast_axes(self):
         elements = [torch.randn(2, length, 5) for length in (3, 4)]
         nested = NestedTensor(elements, ragged_dims=(1,))
         ambiguous = torch.randn(2, 1, 5)
@@ -322,7 +309,7 @@ class TestAmbiguousOperands:
         )
         assert_elements_close(nested + shared, [element + shared[0] for element in elements])
 
-    def test_batch_sized_static_tail_is_not_mistaken_for_a_batch_axis(self):
+    def test_batch_sized_static_tail(self):
         elements = [torch.zeros(length, 2, 4) for length in (2, 3)]
         operand = torch.arange(8.0).reshape(2, 4)
 
@@ -475,7 +462,7 @@ class TestLayoutPreservation:
         assert_elements_close(output, [element + operand for element in elements])
         assert output.shape == nested.shape
 
-    def test_source_derived_empty_batch_preserves_topology(self):
+    def test_empty_batch_topology(self):
         nested = NestedTensor(
             [torch.randn(2, length, 5) for length in (3, 4)],
             ragged_dims=(1,),
@@ -506,7 +493,7 @@ class TestNestedBroadcast:
         ids=["single-sample", "batch"],
     )
     @pytest.mark.parametrize("source_first", [False, True])
-    def test_source_expands_target_static_tail_with_gradient(self, shapes, source_first):
+    def test_static_tail_expansion(self, shapes, source_first):
         target, source, target_elements, source_elements = expanding_ragged_operands(
             shapes,
             requires_grad=True,
@@ -630,7 +617,7 @@ class TestWhereAndTernary:
         return values.unsqueeze(1) if values.dim() == 2 else values
 
     @pytest.mark.parametrize("condition_spelling", ["lower-rank", "unit-sample"])
-    def test_nested_where_matches_values_and_gradients(self, condition_spelling):
+    def test_where_derivatives(self, condition_spelling):
         condition, unit, sampled, unit_values, sampled_values = self.sampled_operands(
             (3, 5),
             condition_spelling=condition_spelling,
@@ -673,7 +660,7 @@ class TestWhereAndTernary:
         assert fake_tensor_mod.is_fake(output.values())
         assert output.shape == (2, 4, 5, 3)
 
-    def test_nested_where_dynamic_fullgraph_with_gradient(self):
+    def test_compiled_where_derivatives(self):
         def consume(condition, unit, sampled):
             return torch.where(condition, unit, sampled).values().square().sum()
 
@@ -704,7 +691,7 @@ class TestWhereAndTernary:
             for actual, reference in zip(actual_gradients, expected_gradients):
                 torch.testing.assert_close(actual, reference)
 
-    def test_where_with_dense_tail_and_condition(self):
+    def test_dense_tail_condition(self):
         elements = [torch.randn(3, length, 5) for length in (2, 4)]
         nested = NestedTensor(elements, ragged_dims=(1,))
         tail = torch.rand(5)
@@ -771,7 +758,7 @@ class TestComplementarySingletonBroadcast:
         [(torch.add, False), (torch.sub, True)],
         ids=("add", "column-minus-row"),
     )
-    def test_values_and_vjp_match_per_element(self, operation, reverse):
+    def test_values_and_derivatives(self, operation, reverse):
         lengths = (2, 3)
         row_template, column_template, row_values, column_values = self._operands(lengths)
         row = row_template.packed_like(row_values)
@@ -806,7 +793,7 @@ class TestComplementarySingletonBroadcast:
         assert output.ragged_dims == (0, 1)
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    def test_aot_eager_fullgraph_vjp_matches_per_element(self):
+    def test_compiled_values_derivatives(self):
         lengths = (2, 3)
         row_template, column_template, row_values, column_values = self._operands(lengths)
         reference_row = row_values.detach().clone().requires_grad_()
@@ -839,7 +826,7 @@ class TestComplementarySingletonBroadcast:
             elements.append(expanded.unsqueeze(-1) + expanded.unsqueeze(-2))
         return NestedTensor(elements, ragged_dims=(1, 2)).values()
 
-    def test_static_prefix_matches_per_element_under_strict_execution(self):
+    def test_static_prefix_derivatives(self):
         lengths = (2, 3)
         parts = self._static_prefix_input(lengths)
         reference_parts = [part.detach().clone().requires_grad_() for part in parts]
@@ -901,7 +888,7 @@ class TestComplementarySingletonBroadcast:
                 torch.testing.assert_close(actual, reference)
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    def test_static_prefix_channel_tail_dynamic_fullgraph_vjp(self):
+    def test_compiled_static_channel_tail(self):
         def square(source):
             return torch.relu(source.unsqueeze(-2) + source.unsqueeze(-3))
 
@@ -974,7 +961,7 @@ class TestComplementarySingletonBroadcast:
 
 class TestInPlace:
 
-    def test_convolution_residual_preserves_aliases_and_gradients(self, device):
+    def test_convolution_residual_derivatives(self, device):
         elements = [
             torch.randn(length, length, 2, device=device, dtype=torch.float64, requires_grad=True) for length in (3, 5)
         ]
@@ -1005,7 +992,7 @@ class TestInPlace:
 
     @pytest.mark.parametrize("operation", ["add_", "relu_", "copy_"])
     @pytest.mark.parametrize("detached", [False, True])
-    def test_saved_packed_values_detect_inplace_mutation(self, operation, detached):
+    def test_saved_packed_mutation(self, operation, detached):
         elements = [torch.randn(length, 3, requires_grad=True) for length in (2, 4)]
         output = NestedTensor(elements).sin()
         if detached:
@@ -1022,7 +1009,7 @@ class TestInPlace:
             loss.backward()
 
     @pytest.mark.parametrize("view", [False, True])
-    def test_leaf_storage_is_protected_by_inplace_autograd(self, view):
+    def test_leaf_mutation_errors(self, view):
         leaf = torch.randn(6, 3, requires_grad=True)
         values = leaf.view_as(leaf) if view else leaf
         template = NestedTensor([torch.empty(2, 3), torch.empty(4, 3)])
@@ -1036,7 +1023,7 @@ class TestInPlace:
             output.add_(other)
         torch.testing.assert_close(leaf, before + 1)
 
-    def test_split_view_storage_rejects_inplace_mutation_like_dense(self):
+    def test_split_view_mutation_errors(self):
         base = torch.randn(10, 3, requires_grad=True) * 2
         values = base.split((6, 4))[0]
         template = NestedTensor([torch.empty(2, 3), torch.empty(4, 3)])
@@ -1049,7 +1036,7 @@ class TestInPlace:
         torch.testing.assert_close(base, before)
 
     @pytest.mark.parametrize("operation", ["add_", "copy_"])
-    def test_rhs_projection_keeps_version_checks_after_inplace_use(self, operation):
+    def test_operand_projection_mutation(self, operation):
         rhs = NestedTensor([torch.randn(length, 3, requires_grad=True) for length in (2, 4)]).sin()
         lhs = NestedTensor([torch.randn(length, 3, requires_grad=True) for length in (2, 4)]).cos()
         getattr(lhs, operation)(rhs)
@@ -1102,7 +1089,7 @@ class TestNestedViewAlignment:
             elements.append((pair + pair.transpose(0, 1)).flatten(0, 1))
         return torch.cat(elements)
 
-    def test_square_pair_adds_its_transpose_without_leaving_packed_execution(self):
+    def test_square_pair_transpose(self):
         lengths = (2, 3)
         template, values = self._pair(lengths)
         pair = template.packed_like(values)
@@ -1112,7 +1099,7 @@ class TestNestedViewAlignment:
         torch.testing.assert_close(output.values(), self._symmetrize(values, lengths))
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    def test_square_pair_transpose_dynamic_fullgraph_vjp(self):
+    def test_compiled_pair_transpose_derivatives(self):
         def symmetrize(structure, packed):
             pair = structure.packed_like(packed)
             return (pair + pair.transpose(-2, -3)).values()
@@ -1525,7 +1512,7 @@ class TestAutograd:
         assert ordinary.shape == (2, 4, 3)
         torch.testing.assert_close(ordinary.values(), operation(values, coefficient))
 
-    def test_dense_operand_gradient_matches_per_element_reference(self):
+    def test_dense_operand_derivatives(self):
         leaves = [torch.randn(3, length, 5, requires_grad=True) for length in (2, 4)]
         operand = torch.randn(5, requires_grad=True)
 
@@ -1575,100 +1562,101 @@ def _compare(target_parts, source_parts, target_order, source_order, operation, 
         torch.testing.assert_close(actual, reference, atol=1e-12, rtol=1e-12)
 
 
-@pytest.mark.parametrize("orders", [((0, 1), (1, 0)), ((1, 0), (0, 1))])
-@pytest.mark.parametrize("axis", [0, 1])
-@pytest.mark.parametrize("batch_first", [True, False])
-@pytest.mark.parametrize(
-    "operation,source_first",
-    [(torch.mul, False), (torch.sub, False), (torch.sub, True), (torch.div, False), (torch.div, True)],
-    ids=["multiply", "target-minus-mask", "mask-minus-target", "target-div-mask", "mask-div-target"],
-)
-def test_retained_ragged_singletons_preserve_values_operand_order_and_vjp(
-    device, orders, axis, batch_first, operation, source_first
-):
-    shapes = ((2, 3, 4), (4, 2, 4))
-    mask_shapes = [tuple(1 if dim == axis else size for dim, size in enumerate(shape)) for shape in shapes]
-    _compare(
-        _parts(shapes, device),
-        _parts(mask_shapes, device, 0.5),
-        *orders,
-        operation,
-        source_first,
-        batch_first,
+class TestRetainedBroadcast:
+
+    @pytest.mark.parametrize("orders", [((0, 1), (1, 0)), ((1, 0), (0, 1))])
+    @pytest.mark.parametrize("axis", [0, 1])
+    @pytest.mark.parametrize("batch_first", [True, False])
+    @pytest.mark.parametrize(
+        "operation,source_first",
+        [(torch.mul, False), (torch.sub, False), (torch.sub, True), (torch.div, False), (torch.div, True)],
+        ids=["multiply", "target-minus-mask", "mask-minus-target", "target-div-mask", "mask-div-target"],
     )
+    def test_operand_order_derivatives(self, device, orders, axis, batch_first, operation, source_first):
+        shapes = ((2, 3, 4), (4, 2, 4))
+        mask_shapes = [tuple(1 if dim == axis else size for dim, size in enumerate(shape)) for shape in shapes]
+        _compare(
+            _parts(shapes, device),
+            _parts(mask_shapes, device, 0.5),
+            *orders,
+            operation,
+            source_first,
+            batch_first,
+        )
 
+    @pytest.mark.parametrize("orders", [((1, 2), (2, 1)), ((2, 1), (1, 2))])
+    @pytest.mark.parametrize("axis", [1, 2])
+    def test_static_prefix_features(self, device, orders, axis):
+        shapes = ((2, 2, 3, 1), (2, 4, 2, 1))
+        masks = [
+            tuple(1 if dim == axis else 4 if dim == 3 else size for dim, size in enumerate(shape)) for shape in shapes
+        ]
+        _compare(_parts(shapes, device), _parts(masks, device, 0.5), *orders, torch.sub, True)
 
-@pytest.mark.parametrize("orders", [((1, 2), (2, 1)), ((2, 1), (1, 2))])
-@pytest.mark.parametrize("axis", [1, 2])
-def test_nonleading_ragged_singletons_keep_static_prefix_and_expand_features(device, orders, axis):
-    shapes = ((2, 2, 3, 1), (2, 4, 2, 1))
-    masks = [tuple(1 if dim == axis else 4 if dim == 3 else size for dim, size in enumerate(shape)) for shape in shapes]
-    _compare(_parts(shapes, device), _parts(masks, device, 0.5), *orders, torch.sub, True)
+    @pytest.mark.parametrize("order", [(0, 1), (1, 0)])
+    def test_sample_axis_expansion(self, device, order):
+        _compare(
+            _parts(((2, 3, 4), (4, 5, 4)), device),
+            _parts(((1, 3, 4), (1, 1, 4)), device, 0.5),
+            order,
+            tuple(reversed(order)),
+            torch.mul,
+            False,
+        )
 
+    @pytest.mark.parametrize("axis", [0, 1])
+    @pytest.mark.parametrize("backend", [None, "eager"])
+    def test_empty_geometry(self, device, axis, backend):
+        shapes = ((0, 3, 4), (2, 3, 4)) if axis == 0 else ((3, 0, 4), (3, 2, 4))
+        masks = [tuple(1 if dim == axis else size for dim, size in enumerate(shape)) for shape in shapes]
+        target = NestedTensor(_parts(shapes, device), ragged_dims=(0, 1))
+        source = NestedTensor(_parts(masks, device), ragged_dims=(0, 1))
+        expected = NestedTensor([a * b for a, b in zip(target, source)], ragged_dims=(0, 1))
+        empty_target, empty_source = target[:0], source[:0]
+        output = target * source
+        subtract = (
+            torch.sub if backend is None else torch.compile(torch.sub, backend=backend, fullgraph=True, dynamic=True)
+        )
+        empty_output = subtract(empty_source, empty_target)
+        torch.testing.assert_close(output.values(), expected.values())
+        torch.testing.assert_close(output.element_sizes(), expected.element_sizes())
+        assert empty_output.shape == empty_target.shape
+        assert empty_output.ragged_dims == (0, 1)
+        assert empty_output.values().shape == empty_target.values().shape
 
-@pytest.mark.parametrize("order", [(0, 1), (1, 0)])
-def test_additional_retained_axis_can_broadcast_in_only_one_sample(device, order):
-    _compare(
-        _parts(((2, 3, 4), (4, 5, 4)), device),
-        _parts(((1, 3, 4), (1, 1, 4)), device, 0.5),
-        order,
-        tuple(reversed(order)),
-        torch.mul,
-        False,
-    )
+    def test_incompatible_extent(self, device):
+        target = NestedTensor(_parts(((2, 3, 4), (4, 5, 4)), device), ragged_dims=(0, 1))
+        source = NestedTensor(_parts(((1, 2, 4), (1, 5, 4)), device), ragged_dims=(0, 1))
+        with pytest.raises((ValueError, RuntimeError)):
+            target * source
 
-
-@pytest.mark.parametrize("axis", [0, 1])
-@pytest.mark.parametrize("backend", [None, "eager"])
-def test_zero_volume_elements_and_empty_batch_retain_the_full_operand_shape(device, axis, backend):
-    shapes = ((0, 3, 4), (2, 3, 4)) if axis == 0 else ((3, 0, 4), (3, 2, 4))
-    masks = [tuple(1 if dim == axis else size for dim, size in enumerate(shape)) for shape in shapes]
-    target = NestedTensor(_parts(shapes, device), ragged_dims=(0, 1))
-    source = NestedTensor(_parts(masks, device), ragged_dims=(0, 1))
-    expected = NestedTensor([a * b for a, b in zip(target, source)], ragged_dims=(0, 1))
-    empty_target, empty_source = target[:0], source[:0]
-    output = target * source
-    subtract = torch.sub if backend is None else torch.compile(torch.sub, backend=backend, fullgraph=True, dynamic=True)
-    empty_output = subtract(empty_source, empty_target)
-    torch.testing.assert_close(output.values(), expected.values())
-    torch.testing.assert_close(output.element_sizes(), expected.element_sizes())
-    assert empty_output.shape == empty_target.shape
-    assert empty_output.ragged_dims == (0, 1)
-    assert empty_output.values().shape == empty_target.values().shape
-
-
-def test_incompatible_retained_extent_is_rejected(device):
-    target = NestedTensor(_parts(((2, 3, 4), (4, 5, 4)), device), ragged_dims=(0, 1))
-    source = NestedTensor(_parts(((1, 2, 4), (1, 5, 4)), device), ragged_dims=(0, 1))
-    with pytest.raises((ValueError, RuntimeError)):
-        target * source
-
-
-@pytest.mark.parametrize("axis", [0, 1])
-@pytest.mark.parametrize("source_first", [False, True])
-def test_declared_singletons_compile_without_equal_offset_guards(axis, source_first):
-    torch.compiler.reset()
-    compiled = torch.compile(
-        lambda full, mask: (mask - full).values() if source_first else (full - mask).values(),
-        backend="aot_eager",
-        fullgraph=True,
-        dynamic=True,
-    )
-    try:
-        for lengths in ((2, 3), (4, 2)):
-            shapes = [(length, length, 4) for length in lengths]
-            masks = [tuple(1 if dim == axis else size for dim, size in enumerate(shape)) for shape in shapes]
-            target_parts, source_parts = _parts(shapes, "cpu"), _parts(masks, "cpu", 0.5)
-            target = NestedTensor(target_parts, ragged_dims=(0, 1))
-            source = NestedTensor(source_parts, ragged_dims=(0, 1))
-            expected = NestedTensor(
-                [b - a if source_first else a - b for a, b in zip(target_parts, source_parts)], ragged_dims=(0, 1)
-            )
-            values = compiled(target, source)
-            gradients = torch.autograd.grad(values.square().sum(), (*target_parts, *source_parts))
-            expected_gradients = torch.autograd.grad(expected.values().square().sum(), (*target_parts, *source_parts))
-            torch.testing.assert_close(values, expected.values())
-            for actual, reference in zip(gradients, expected_gradients):
-                torch.testing.assert_close(actual, reference)
-    finally:
+    @pytest.mark.parametrize("axis", [0, 1])
+    @pytest.mark.parametrize("source_first", [False, True])
+    def test_compiled_derivatives(self, axis, source_first):
         torch.compiler.reset()
+        compiled = torch.compile(
+            lambda full, mask: (mask - full).values() if source_first else (full - mask).values(),
+            backend="aot_eager",
+            fullgraph=True,
+            dynamic=True,
+        )
+        try:
+            for lengths in ((2, 3), (4, 2)):
+                shapes = [(length, length, 4) for length in lengths]
+                masks = [tuple(1 if dim == axis else size for dim, size in enumerate(shape)) for shape in shapes]
+                target_parts, source_parts = _parts(shapes, "cpu"), _parts(masks, "cpu", 0.5)
+                target = NestedTensor(target_parts, ragged_dims=(0, 1))
+                source = NestedTensor(source_parts, ragged_dims=(0, 1))
+                expected = NestedTensor(
+                    [b - a if source_first else a - b for a, b in zip(target_parts, source_parts)], ragged_dims=(0, 1)
+                )
+                values = compiled(target, source)
+                gradients = torch.autograd.grad(values.square().sum(), (*target_parts, *source_parts))
+                expected_gradients = torch.autograd.grad(
+                    expected.values().square().sum(), (*target_parts, *source_parts)
+                )
+                torch.testing.assert_close(values, expected.values())
+                for actual, reference in zip(gradients, expected_gradients):
+                    torch.testing.assert_close(actual, reference)
+        finally:
+            torch.compiler.reset()

@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import pytest
+import torch
 
 from danling.metrics.global_metrics import GlobalMetrics
 from danling.metrics.registry import METRICS
@@ -27,82 +28,67 @@ from danling.metrics.stream_metrics import StreamMetrics
 
 
 class TestMetricsRegistry:
-    def test_build_is_case_insensitive(self):
-        assert isinstance(METRICS.build("BINARY", distributed=False), GlobalMetrics)
+    @pytest.mark.parametrize(
+        "specification,options,expected",
+        [
+            ("BINARY", {}, GlobalMetrics),
+            ("binary", {"mode": "stream"}, StreamMetrics),
+            ({"type": "MULTICLASS", "num_classes": 3, "mode": "global"}, {"mode": "stream"}, StreamMetrics),
+            (None, {"type": "binary"}, GlobalMetrics),
+        ],
+        ids=["case", "mode", "mapping", "keyword"],
+    )
+    def test_build(self, specification, options, expected):
+        original = dict(specification) if isinstance(specification, dict) else specification
+        args = () if specification is None else (specification,)
+        assert isinstance(METRICS.build(*args, distributed=False, **options), expected)
+        assert specification == original
 
-    def test_build_accepts_config_mapping(self):
-        config = {"type": "MULTICLASS", "num_classes": 3, "mode": "global"}
-        metrics = METRICS.build(config, mode="stream", distributed=False)
-        assert isinstance(metrics, StreamMetrics)
-        assert config == {"type": "MULTICLASS", "num_classes": 3, "mode": "global"}
-
-    def test_build_accepts_type_keyword(self):
-        assert isinstance(METRICS.build(type="binary", distributed=False), GlobalMetrics)
-
-    def test_build_forwards_metric_arguments(self):
+    def test_metric_argument(self):
         from danling.metrics.functional import binary_accuracy
 
-        metric = binary_accuracy()
-        metrics = METRICS.build("binary", metric, distributed=False)
-        assert metrics.metrics == {metric.name: metric}
+        metrics = METRICS.build("binary", binary_accuracy(), distributed=False)
+        metrics.update(torch.tensor([0.1, 0.9]), torch.tensor([0, 1]))
+        result = metrics.average()
+        assert set(result) == {"acc"}
+        assert result["acc"] == pytest.approx(1.0)
 
-    def test_build_respects_mode(self):
-        assert isinstance(METRICS.build("BINARY", distributed=False), GlobalMetrics)
-        assert isinstance(METRICS.build("binary", mode="stream", distributed=False), StreamMetrics)
-
-    def test_maps_num_labels_to_num_classes_for_multiclass(self):
+    def test_class_dimension_alias(self):
         metrics = METRICS.build("multiclass", num_labels=5, distributed=False)
-        assert isinstance(metrics, GlobalMetrics)
-        assert metrics.requirements["num_classes"] == 5
+        metrics.update(torch.tensor([[10.0, 0, 0, 0, 0], [0, 10.0, 0, 0, 0]]), torch.tensor([0, 1]))
+        assert metrics.average()["acc"] == pytest.approx(1.0)
 
-    def test_requires_num_classes_for_multiclass(self):
-        with pytest.raises(ValueError, match="num_classes is required"):
-            METRICS.build("multiclass", distributed=False)
-
-    def test_requires_num_labels_for_multilabel(self):
-        with pytest.raises(ValueError, match="num_labels is required"):
-            METRICS.build("multilabel", distributed=False)
-
-    def test_rejects_conflicting_multiclass_dimensions(self):
-        with pytest.raises(ValueError, match="num_classes and num_labels must match"):
-            METRICS.build("multiclass", num_classes=4, num_labels=5, distributed=False)
-
-    def test_maps_num_labels_to_num_outputs_for_regression(self):
-        metrics = METRICS.build("regression", num_labels=3, distributed=False)
-        assert isinstance(metrics, GlobalMetrics)
-        assert metrics.metrics["mse"].num_outputs == 3
-        assert metrics.metrics["rmse"].num_outputs == 3
-
-    def test_regression_defaults_to_one_output(self):
-        metrics = METRICS.build("regression", distributed=False)
-        assert isinstance(metrics, GlobalMetrics)
-        assert metrics.metrics["mse"].num_outputs == 1
-        assert metrics.metrics["rmse"].num_outputs == 1
-
-    def test_rejects_conflicting_regression_dimensions(self):
-        with pytest.raises(ValueError, match="num_outputs and num_labels must match"):
-            METRICS.build("regression", num_outputs=2, num_labels=3, distributed=False)
-
-    def test_accepts_numpy_integer_dimensions(self):
-        np = pytest.importorskip("numpy")
-
-        metrics = METRICS.build("multiclass", num_classes=np.int64(5), distributed=False)
-
-        assert isinstance(metrics, GlobalMetrics)
-        assert metrics.requirements["num_classes"] == 5
+    @pytest.mark.parametrize("options,width", [({}, 1), ({"num_labels": 3}, 3)])
+    def test_output_dimension(self, options, width):
+        metrics = METRICS.build("regression", distributed=False, **options)
+        metrics.update(torch.zeros(2, width), torch.ones(2, width))
+        result = metrics.average()
+        expected = torch.ones(width) if width > 1 else torch.tensor(1.0)
+        for name in ("mse", "rmse"):
+            torch.testing.assert_close(torch.as_tensor(result[name]).float(), expected)
 
     @pytest.mark.parametrize(
-        ("task", "kwargs", "error"),
+        "task,options,error",
         [
+            ("multiclass", {}, "num_classes is required"),
+            ("multilabel", {}, "num_labels is required"),
+            ("multiclass", {"num_classes": 4, "num_labels": 5}, "num_classes and num_labels must match"),
+            ("regression", {"num_outputs": 2, "num_labels": 3}, "num_outputs and num_labels must match"),
             ("multiclass", {"num_classes": 0}, "num_classes must be a positive integer"),
             ("multilabel", {"num_labels": 0}, "num_labels must be a positive integer"),
             ("regression", {"num_outputs": 0}, "num_outputs must be a positive integer"),
         ],
     )
-    def test_rejects_non_positive_dimensions(self, task, kwargs, error):
+    def test_invalid_dimensions(self, task, options, error):
         with pytest.raises(ValueError, match=error):
-            METRICS.build(task, distributed=False, **kwargs)
+            METRICS.build(task, distributed=False, **options)
 
-    def test_build_raises_for_unknown_component(self):
+    def test_numpy_dimension(self):
+        np = pytest.importorskip("numpy")
+        metrics = METRICS.build("multiclass", num_classes=np.int64(5), distributed=False)
+        metrics.update(torch.tensor([[10.0, 0, 0, 0, 0]]), torch.tensor([0]))
+        assert metrics.average()["acc"] == pytest.approx(1.0)
+
+    def test_unknown(self):
         with pytest.raises(ValueError, match="Component missing is not registered."):
             METRICS.build("missing")

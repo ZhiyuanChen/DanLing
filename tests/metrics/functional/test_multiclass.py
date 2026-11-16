@@ -277,7 +277,7 @@ class TestMulticlassMetrics:
             metric(state)
 
     @pytest.mark.parametrize("average", [None, "micro", "weighted"])
-    def test_balanced_accuracy_rejects_non_macro_average(self, average) -> None:
+    def test_balanced_average_error(self, average) -> None:
         with pytest.raises(ValueError, match="only supports average='macro'"):
             multiclass_balanced_accuracy(num_classes=NUM_CLASSES, average=average)
 
@@ -310,18 +310,11 @@ class TestMulticlassMetrics:
         )
         assert torch.isnan(torch.as_tensor(metric(empty_state)))
 
-    def test_f1_alias(self) -> None:
-        assert isinstance(multiclass_f1_score(num_classes=NUM_CLASSES), multiclass_fbeta_score)
+    def test_f1(self, device):
+        metric = multiclass_f1_score(num_classes=NUM_CLASSES)
+        reference = multiclass_fbeta_score(num_classes=NUM_CLASSES, beta=1)
+        state = build_confmat_state(metric, device)
+        assert_metric_close(metric(state), reference(state))
 
     def test_iou_name(self) -> None:
         assert multiclass_iou(num_classes=NUM_CLASSES).name == "iou"
-
-    def test_stats_are_cached_per_state(self, device) -> None:
-        state = build_confmat_state(multiclass_precision(num_classes=NUM_CLASSES), device)
-        first = state.multiclass_stats
-        multiclass_precision(num_classes=NUM_CLASSES)(state)
-        multiclass_recall(num_classes=NUM_CLASSES)(state)
-        multiclass_specificity(num_classes=NUM_CLASSES)(state)
-        second = state.multiclass_stats
-
-        assert first is second

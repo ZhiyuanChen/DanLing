@@ -19,6 +19,10 @@
 
 from __future__ import annotations
 
+from functools import partial
+from types import SimpleNamespace
+
+import pytest
 import torch
 
 from danling.metrics.factory import (
@@ -32,48 +36,46 @@ from danling.metrics.preprocess import preprocess_binary
 from danling.metrics.stream_metrics import StreamMetrics
 
 
+@pytest.fixture(
+    params=[
+        (binary_metrics, {}, (8,), (8,)),
+        (multiclass_metrics, {"num_classes": 5}, (8, 5), (8,)),
+        (multilabel_metrics, {"num_labels": 5}, (8, 5), (8, 5)),
+        (regression_metrics, {"num_outputs": 1}, (8,), (8,)),
+        (regression_metrics, {"num_outputs": 2}, (8, 2), (8, 2)),
+    ],
+    ids=["binary", "multiclass", "multilabel", "regression", "multioutput"],
+)
+def factory_case(request):
+    factory, options, input_shape, target_shape = request.param
+    regression = factory is regression_metrics
+    targets = torch.randn(target_shape) if regression else torch.randint(options.get("num_classes", 2), target_shape)
+    return SimpleNamespace(
+        build=partial(factory, **options, distributed=False),
+        inputs=torch.randn(input_shape),
+        targets=targets,
+        names={"pearson", "spearman", "r2", "mse", "rmse"} if regression else {"auroc", "auprc", "acc", "f1", "mcc"},
+    )
+
+
 class TestMetricFactories:
-    def test_global_is_default(self):
-        assert isinstance(binary_metrics(distributed=False), GlobalMetrics)
-        assert isinstance(multiclass_metrics(num_classes=4, distributed=False), GlobalMetrics)
-        assert isinstance(multilabel_metrics(num_labels=4, distributed=False), GlobalMetrics)
-        assert isinstance(regression_metrics(num_outputs=2, distributed=False), GlobalMetrics)
+    @pytest.mark.parametrize("mode,expected", [(None, GlobalMetrics), ("stream", StreamMetrics)])
+    def test_mode(self, factory_case, mode, expected):
+        metrics = factory_case.build(**({} if mode is None else {"mode": mode}))
+        assert isinstance(metrics, expected)
 
-    def test_stream_respects_explicit_mode(self):
-        assert isinstance(binary_metrics(mode="stream", distributed=False), StreamMetrics)
-        assert isinstance(multiclass_metrics(num_classes=4, mode="stream", distributed=False), StreamMetrics)
-        assert isinstance(multilabel_metrics(num_labels=4, mode="stream", distributed=False), StreamMetrics)
-        assert isinstance(regression_metrics(num_outputs=1, mode="stream", distributed=False), StreamMetrics)
-        assert isinstance(regression_metrics(num_outputs=2, mode="stream", distributed=False), StreamMetrics)
+    def test_default_metrics(self, factory_case):
+        metrics = factory_case.build(mode="stream")
+        metrics.update(factory_case.inputs, factory_case.targets)
+        assert factory_case.names <= metrics.avg.keys()
 
-    def test_forward_preprocess_constructor_kwarg(self):
-        global_metrics = binary_metrics(distributed=False, preprocess=preprocess_binary)
-        assert isinstance(global_metrics, GlobalMetrics)
-        global_metrics.update(torch.randn(8), torch.randint(2, (8,)))
+    @pytest.mark.parametrize("mode", ["global", "stream"])
+    def test_preprocess_option(self, mode):
+        metrics = binary_metrics(mode=mode, distributed=False, preprocess=preprocess_binary)
+        metrics.update(torch.tensor([-10.0, 10.0]), torch.tensor([0, 1]))
+        assert metrics.avg["acc"] == pytest.approx(1.0)
 
-        stream_metrics = binary_metrics(mode="stream", preprocess=preprocess_binary)
-        assert isinstance(stream_metrics, StreamMetrics)
-        stream_metrics.update(torch.randn(8), torch.randint(2, (8,)))
-
-    def test_stream_builds_default_metrics_for_all_tasks(self):
-        metrics = binary_metrics(mode="stream")
-        metrics.update(torch.randn(8), torch.randint(2, (8,)))
-        assert isinstance(metrics, StreamMetrics)
-        assert {"auroc", "auprc", "acc", "f1", "mcc"} <= set(metrics.avg.keys())
-
-        metrics = multiclass_metrics(num_classes=5, mode="stream")
-        metrics.update(torch.randn(8, 5), torch.randint(5, (8,)))
-        assert {"auroc", "auprc", "acc", "f1", "mcc"} <= set(metrics.avg.keys())
-
-        metrics = multilabel_metrics(num_labels=5, mode="stream")
-        metrics.update(torch.randn(8, 5), torch.randint(2, (8, 5)))
-        assert {"auroc", "auprc", "acc", "f1", "mcc"} <= set(metrics.avg.keys())
-
-        metrics = regression_metrics(num_outputs=1, mode="stream")
-        metrics.update(torch.randn(8), torch.randn(8))
-        assert {"pearson", "spearman", "r2", "mse", "rmse"} <= set(metrics.avg.keys())
-
-    def test_stream_regression_preserves_multioutput(self):
+    def test_multioutput(self):
         metrics = regression_metrics(num_outputs=2, mode="stream", distributed=False)
         metrics.update(torch.randn(8, 2), torch.randn(8, 2))
         assert isinstance(metrics.avg["pearson"], float)

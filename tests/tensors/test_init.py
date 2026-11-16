@@ -21,16 +21,9 @@
 class TestImports:
     def test_optional_dependencies(self, run_isolated):
         run_isolated("""
-            import builtins
+            import sys
 
-            original_import = builtins.__import__
-
-            def import_without_optional_dependencies(name, *args, **kwargs):
-                if name.split(".", 1)[0] in {"torchmetrics", "transformers"}:
-                    raise ModuleNotFoundError(name)
-                return original_import(name, *args, **kwargs)
-
-            builtins.__import__ = import_without_optional_dependencies
+            sys.modules.update(torchmetrics=None, transformers=None)
 
             from danling.tensors import NestedTensor
             import torch

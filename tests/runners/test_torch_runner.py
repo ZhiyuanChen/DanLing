@@ -39,7 +39,13 @@ from danling.metrics import GlobalMetrics, MultiTaskMetrics, StreamMetrics
 from danling.metrics.functional import mse
 from danling.runners import RunnerConfig, TorchRunner
 from danling.tensors import NestedTensor
-from tests.runners.distributed import configure_distributed_env, process_group, require_gloo, run_distributed
+from tests.runners.distributed import (
+    configure_distributed_env,
+    process_group,
+    require_gloo,
+    require_nccl_cuda,
+    run_distributed,
+)
 
 
 class TinyTorchRunner(TorchRunner):
@@ -207,41 +213,6 @@ class DcpConfigTorchRunner(TorchRunner):
         super().__init__(config)
         self.model = nn.Linear(1, 1)
         self.optimizer = optim.SGD(self.model.parameters(), lr=0.1)
-
-
-class _FakePlacement:
-    def __init__(self, *, replicate: bool = False, partial: bool = False) -> None:
-        self._replicate = replicate
-        self._partial = partial
-
-    def is_replicate(self) -> bool:
-        return self._replicate
-
-    def is_partial(self) -> bool:
-        return self._partial
-
-
-class _FakeReplicate:
-    def is_replicate(self) -> bool:
-        return True
-
-    def is_partial(self) -> bool:
-        return False
-
-
-class _FakeDTensor:
-    def __init__(self, local: torch.Tensor, placements: list[_FakePlacement]) -> None:
-        self._local = local
-        self.placements = placements
-
-    def to_local(self) -> torch.Tensor:
-        return self._local
-
-    def detach(self) -> _FakeDTensor:
-        return self
-
-    def redistribute(self, *, placements: list[object]) -> _FakeDTensor:
-        return _FakeDTensor(self._local, placements)
 
 
 def _ddp_compile_wrap_worker(rank: int, world_size: int) -> None:
@@ -445,6 +416,80 @@ def _torch_runner_empty_token_rank_worker(rank: int, world_size: int, reduction:
         runner.close()
 
 
+def _infer_gather_worker(rank, world_size, invalid):
+    configure_distributed_env(rank, world_size)
+    runner = DistributedTinyTorchRunner({"logging.enabled": False, "dist.backend": "gloo"})
+
+    class Loader:
+        sampler = [rank] if invalid else [rank, rank + 2, 4]
+
+        def __iter__(self):
+            values = [0, 1] if invalid else self.sampler
+            yield torch.tensor(values, dtype=torch.float32).unsqueeze(1)
+
+        def __len__(self):
+            return 1
+
+    try:
+        runner.model = nn.Identity()
+        runner.dataloaders["infer"] = Loader()
+        if invalid:
+            with pytest.raises(ValueError, match="more predictions"):
+                runner.infer("infer")
+        else:
+            assert runner.infer("infer") == [0.0, 1.0, 2.0, 3.0, 4.0]
+    finally:
+        runner.close()
+
+
+def _selected_device_worker(rank, world_size, device_type, collective_only):
+    configure_distributed_env(rank, world_size)
+    os.environ["LOCAL_RANK"] = str((rank + 1) % world_size)
+    os.environ.pop("BACKEND", None)
+    os.environ.pop("TORCHELASTIC_RESTART_COUNT", None)
+    device = torch.device(device_type, rank) if device_type == "cuda" else torch.device("cpu")
+    runner = object.__new__(TorchRunner)
+    runner.config = RunnerConfig({"device": str(device)})
+    runner.timestamp = "rank-" + str(rank)
+    runner.fault_tolerance = None
+    try:
+        if collective_only:
+            backend = "nccl" if device_type == "cuda" else "gloo"
+            if device_type == "cuda":
+                torch.cuda.set_device(device)
+            dist.init_process_group(backend, rank=rank, world_size=world_size)
+            runner.fault_tolerance = SimpleNamespace(
+                enabled=True, group_size=world_size, replicate_process_group=dist.group.WORLD
+            )
+            payload = torch.ones(1, device=runner.all_reduce_device())
+            dist.all_reduce(payload)
+            torch.testing.assert_close(payload.cpu(), torch.tensor([float(world_size)]))
+        else:
+            runner.init_distributed()
+            assert runner.device == device
+            assert runner.rank == rank and runner.world_size == world_size
+            assert runner.timestamp == "rank-0"
+            assert dist.get_backend() == ("nccl" if device_type == "cuda" else "gloo")
+            if device_type == "cuda":
+                assert torch.cuda.current_device() == rank
+    finally:
+        runner.destroy_process_group()
+
+
+@pytest.fixture
+def cpu_mesh(tmp_path):
+    require_gloo()
+    from torch.distributed.device_mesh import DeviceMesh
+
+    assert not dist.is_initialized()
+    dist.init_process_group("gloo", init_method=(tmp_path / "dtensor-init").as_uri(), rank=0, world_size=1)
+    try:
+        yield DeviceMesh("cpu", [0])
+    finally:
+        if dist.is_initialized():
+            dist.destroy_process_group()
+
+
 # ---------------------------------------------------------------------------
 # Construction & Restore
 # ---------------------------------------------------------------------------
@@ -452,7 +497,7 @@ def _torch_runner_empty_token_rank_worker(rank: int, world_size: int, reduction:
 
 class TestMetaModelLifecycle:
     @pytest.mark.parametrize("restore_pretrained", [False, True])
-    def test_meta_build_preserves_ties_buffers_dtype_and_optimizer_ownership(self, tmp_path, restore_pretrained):
+    def test_meta_parameter_ownership(self, tmp_path, restore_pretrained):
         events = []
 
         class Model(nn.Module):
@@ -532,7 +577,7 @@ class TestMetaModelLifecycle:
         finally:
             runner.close()
 
-    def test_initialized_model_is_not_reinitialized_when_meta_construction_is_enabled(self):
+    def test_initialized_model_preserved(self):
         class ExistingRunner(TorchRunner):
             def init_distributed(self):
                 return
@@ -543,9 +588,6 @@ class TestMetaModelLifecycle:
                 with torch.no_grad():
                     self.model.weight.fill_(3)
                     self.model.bias.fill_(4)
-
-            def initialize_model(self, model):
-                raise AssertionError("initialized model must not be reset")
 
         runner = ExistingRunner({"device": "cpu", "logging.enabled": False, "model_init.meta": True})
         try:
@@ -558,7 +600,7 @@ class TestMetaModelLifecycle:
 
 class TestTorchRunnerBootstrap:
 
-    def test_named_compile_groups_preserve_outputs_gradients_names_and_hooks(self, device):
+    def test_named_compile_group_behavior(self, device):
         class Model(nn.Module):
             def __init__(self):
                 super().__init__()
@@ -647,7 +689,7 @@ class TestTorchRunnerBootstrap:
         finally:
             runner.close()
 
-    def test_runner_builds_optimizer_from_model_parameters(self) -> None:
+    def test_builds_optimizer_from_model_parameters(self) -> None:
         class AutoOptimRunner(TorchRunner):
             def init_distributed(self) -> None:
                 return
@@ -719,7 +761,7 @@ class TestTorchRunnerBootstrap:
         finally:
             runner.close()
 
-    def test_optimizer_config_warns_when_parameter_group_matches_nothing(self) -> None:
+    def test_unmatched_optimizer_group(self) -> None:
         class AutoOptimRunner(TorchRunner):
             def init_distributed(self) -> None:
                 return
@@ -751,7 +793,7 @@ class TestTorchRunnerBootstrap:
         finally:
             runner.close()
 
-    def test_dataloader_config_forwards_sampler_and_collate_fn(self) -> None:
+    def test_loader_sampler_and_collation(self) -> None:
         class ReverseSampler:
             def __iter__(self):
                 return iter((3, 2, 1, 0))
@@ -844,64 +886,10 @@ class TestTorchRunnerBootstrap:
         finally:
             runner.close()
 
-    def test_gather_infer_predictions_restores_order_and_deduplicates_padding(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        class Loader:
-            sampler = [0, 2, 4]
-
-            def __iter__(self):
-                yield torch.tensor([[0.0], [2.0], [4.0]])
-
-            def __len__(self):
-                return 1
-
-        def gather(gathered, local):
-            gathered[:] = [local, [(1, 1.0), (3, 3.0), (4, 4.0)]]
-
-        runner = TinyTorchRunner({"logging.enabled": False})
-        runner.model = nn.Identity()
-        runner.dataloaders["infer"] = Loader()
-        monkeypatch.setenv("WORLD_SIZE", "2")
-        monkeypatch.setattr(dist, "is_available", lambda: True)
-        monkeypatch.setattr(dist, "is_initialized", lambda: True)
-        monkeypatch.setattr(dist, "get_world_size", lambda: 2)
-        monkeypatch.setattr(dist, "get_rank", lambda: 0)
-        monkeypatch.setattr(dist, "all_gather_object", gather)
-        monkeypatch.setattr(dist, "destroy_process_group", lambda: None)
-        try:
-            assert runner.infer("infer") == [0.0, 1.0, 2.0, 3.0, 4.0]
-        finally:
-            monkeypatch.setenv("WORLD_SIZE", "1")
-            runner.close()
-
-    def test_gather_infer_predictions_rejects_output_without_sampler_indices(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        class Loader:
-            sampler = [0]
-
-            def __iter__(self):
-                yield torch.tensor([[0.0], [1.0]])
-
-            def __len__(self):
-                return 1
-
-        runner = TinyTorchRunner({"logging.enabled": False})
-        runner.model = nn.Identity()
-        runner.dataloaders["infer"] = Loader()
-        monkeypatch.setenv("WORLD_SIZE", "2")
-        monkeypatch.setattr(dist, "is_available", lambda: True)
-        monkeypatch.setattr(dist, "is_initialized", lambda: True)
-        monkeypatch.setattr(dist, "get_world_size", lambda: 2)
-        monkeypatch.setattr(dist, "get_rank", lambda: 0)
-        monkeypatch.setattr(dist, "destroy_process_group", lambda: None)
-        try:
-            with pytest.raises(ValueError, match="more predictions"):
-                runner.infer("infer")
-        finally:
-            monkeypatch.setenv("WORLD_SIZE", "1")
-            runner.close()
+    @pytest.mark.parametrize("invalid", [False, True])
+    def test_distributed_inference(self, invalid):
+        require_gloo()
+        run_distributed(_infer_gather_worker, worker_args=(invalid,))
 
     def test_load_checkpoint_updates_config_source(self, tmp_path: Path) -> None:
         source = TinyTorchRunner({"logging.enabled": False})
@@ -959,14 +947,14 @@ class TestTorchRunnerBootstrap:
             pytest.skip("torch.compile is not available in this PyTorch build.")
         run_distributed(_ddp_compile_wrap_worker, world_size=2)
 
-    def test_gradient_accumulation_uses_ddp_no_sync(self) -> None:
+    def test_ddp_accumulation_update(self) -> None:
         require_gloo()
         run_distributed(_ddp_no_sync_worker, world_size=2)
 
 
 class TestTorchRunnerCheckpointInterop:
 
-    def test_compiled_wrappers_export_native_model_state(self, tmp_path: Path) -> None:
+    def test_compiled_model_state(self, tmp_path: Path) -> None:
         class NativeModel(nn.Module):
             def __init__(self):
                 super().__init__()
@@ -1010,7 +998,7 @@ class TestTorchRunnerCheckpointInterop:
         importlib.util.find_spec("tensorboard") is not None,
         reason="requires an environment without the optional TensorBoard dependency",
     )
-    def test_tensorboard_missing_dependency_has_actionable_error(self, tmp_path: Path) -> None:
+    def test_tensorboard_dependency_error(self, tmp_path: Path) -> None:
         runner = TinyTorchRunner(
             {
                 "logging.enabled": False,
@@ -1024,7 +1012,7 @@ class TestTorchRunnerCheckpointInterop:
         finally:
             runner.close()
 
-    def test_tensorboard_writes_events_to_configured_directory(self, tmp_path: Path) -> None:
+    def test_tensorboard_events(self, tmp_path: Path) -> None:
         pytest.importorskip("tensorboard", reason="TensorBoard support is an optional dependency")
         log_dir = tmp_path / "events"
         runner = TinyTorchRunner(
@@ -1066,7 +1054,7 @@ class TestTorchRunnerCheckpointInterop:
         assert config["name"] == "dcp-config-test"
         assert config.get("ckpt.backend") == "dcp"
 
-    def test_from_checkpoint_accepts_in_memory_checkpoint(self) -> None:
+    def test_mapping_checkpoint_restore(self) -> None:
         runner = TinyTorchRunner({"logging.enabled": False})
         try:
             runner.train_state.global_step = 7
@@ -1080,7 +1068,7 @@ class TestTorchRunnerCheckpointInterop:
         finally:
             restored.close()
 
-    def test_state_dict_restores_the_next_torch_random_draw(self) -> None:
+    def test_random_stream_resume(self) -> None:
         runner = TinyTorchRunner({"logging.enabled": False})
         try:
             torch.manual_seed(1016)
@@ -1095,7 +1083,7 @@ class TestTorchRunnerCheckpointInterop:
         finally:
             runner.close()
 
-    def test_from_checkpoint_uses_requested_path_over_auto_restore(self, tmp_path: Path) -> None:
+    def test_explicit_checkpoint_precedence(self, tmp_path: Path) -> None:
         source = TinyTorchRunner({"logging.enabled": False})
         checkpoint_path = tmp_path / "torch-runner.pth"
         try:
@@ -1114,7 +1102,7 @@ class TestTorchRunnerCheckpointInterop:
         finally:
             restored.close()
 
-    def test_load_checkpoint_restores_stateful_dataloader_progress(self) -> None:
+    def test_loader_progress_restore(self) -> None:
         source = StatefulDatasetTorchRunner(
             {"logging.enabled": False, "dataloader": {"batch_size": 2, "shuffle": False}}
         )
@@ -1135,7 +1123,7 @@ class TestTorchRunnerCheckpointInterop:
             restored.close()
 
     @pytest.mark.parametrize("shuffle", [False, True])
-    def test_seeded_loader_resume_preserves_model_random_stream(self, tmp_path: Path, shuffle: bool) -> None:
+    def test_loader_resume_rng(self, tmp_path: Path, shuffle: bool) -> None:
         config = {
             "logging.enabled": False,
             "workspace.dir": str(tmp_path),
@@ -1165,35 +1153,56 @@ class TestTorchRunnerCheckpointInterop:
             restored.close()
 
     @pytest.mark.parametrize("accum_steps", [1, 2, 3])
-    def test_training_boundary_does_not_checkpoint_an_unconsumed_batch(self, tmp_path: Path, accum_steps: int) -> None:
+    def test_checkpoint_consumed_batch_boundary(self, tmp_path: Path, accum_steps: int) -> None:
+        class Interrupted(RuntimeError):
+            pass
+
+        class BoundaryRunner(TinyTorchRunner):
+            interrupt = False
+
+            def __init__(self, config):
+                super().__init__(config)
+                self.consumed = []
+                self.datasets["train"] = [(torch.full((4,), float(index)), torch.zeros(2)) for index in range(8)]
+
+            def train_step(self, data):
+                self.consumed.append(int(data[0][0, 0].item()))
+                result = super().train_step(data)
+                if self.interrupt and self.train_state.global_step == 1:
+                    self.snapshot = copy.deepcopy(self.state_dict())
+                    raise Interrupted("checkpoint boundary")
+                return result
+
         config = {
+            "device": "cpu",
             "logging.enabled": False,
-            "workspace.dir": str(tmp_path),
+            "logging.interval": 0,
             "seed": 42,
             "accum_steps": accum_steps,
+            "steps": 2,
             "dataloader": {"batch_size": 1, "shuffle": False},
+            "ckpt.enabled": False,
         }
-        source = StatefulDatasetTorchRunner(config)
+        source = BoundaryRunner({**config, "workspace.dir": str(tmp_path / "source")})
+        reference = BoundaryRunner({**config, "workspace.dir": str(tmp_path / "reference")})
+        restored = BoundaryRunner({**config, "workspace.dir": str(tmp_path / "restored")})
         try:
-            iterator = source._iter_train_batches(source.dataloaders["train"])
-            for index in range(accum_steps):
-                _, batch, flush = next(iterator)
-                assert batch.item() == index
-                assert flush == (index == accum_steps - 1)
-                source.train_state.micro_step += 1
-            checkpoint = source.state_dict()
-            _, expected, _ = next(iterator)
+            reference.train_steps(["train"], [])
+            source.interrupt = True
+            with pytest.raises(Interrupted, match="checkpoint boundary"):
+                source.train_steps(["train"], [])
+            assert source.consumed == list(range(accum_steps))
+            restored.load_checkpoint(source.snapshot)
+            restored.train_steps(["train"], [])
+            assert restored.consumed == list(range(accum_steps, 2 * accum_steps))
+            assert restored.train_state.global_step == reference.train_state.global_step == 2
+            torch.testing.assert_close(restored.model.state_dict(), reference.model.state_dict())
         finally:
             source.close()
-        restored = StatefulDatasetTorchRunner(config)
-        try:
-            restored.load_checkpoint(checkpoint)
-            _, actual, _ = next(restored._iter_train_batches(restored.dataloaders["train"]))
-            assert torch.equal(actual, expected)
-        finally:
+            reference.close()
             restored.close()
 
-    def test_from_checkpoint_path_restores_stateful_dataloader_progress(self, tmp_path: Path) -> None:
+    def test_checkpoint_loader_resume(self, tmp_path: Path) -> None:
         source = StatefulDatasetTorchRunner(
             {"logging.enabled": False, "dataloader": {"batch_size": 2, "shuffle": False}}
         )
@@ -1211,7 +1220,7 @@ class TestTorchRunnerCheckpointInterop:
         finally:
             restored.close()
 
-    def test_auto_resume_restores_stateful_dataloader_progress(self, tmp_path: Path) -> None:
+    def test_auto_resume_loader(self, tmp_path: Path) -> None:
         config = {
             "logging.enabled": False,
             "workspace.root": str(tmp_path),
@@ -1238,7 +1247,7 @@ class TestTorchRunnerCheckpointInterop:
 
 class TestTorchRunnerProfiling:
     @pytest.mark.parametrize("operator_table_rows", [0, 80])
-    def test_profiling_writes_trace_and_operator_table(self, tmp_path: Path, operator_table_rows: int) -> None:
+    def test_profiler_artifacts(self, tmp_path: Path, operator_table_rows: int) -> None:
         runner = TinyTorchRunner(
             {
                 "logging.enabled": False,
@@ -1267,8 +1276,7 @@ class TestTorchRunnerProfiling:
 
 class TestTorchRunnerDistributedRuntime:
     @pytest.mark.parametrize("device", ["cpu", torch.device("cpu")])
-    def test_explicit_cpu_device_overrides_cuda_availability(self, tmp_path: Path, monkeypatch, device) -> None:
-        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    def test_explicit_cpu_device(self, tmp_path: Path, device) -> None:
         runner = TinyTorchRunner(
             {"logging.enabled": False, "workspace.root": str(tmp_path), "seed": None, "device": device}
         )
@@ -1284,56 +1292,31 @@ class TestTorchRunnerDistributedRuntime:
         finally:
             runner.close()
 
-    @pytest.mark.parametrize("configured", ["cuda:3", torch.device("cuda:3"), "cuda", None])
-    def test_device_preserves_explicit_index_or_uses_local_rank(self, monkeypatch, configured) -> None:
-        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-        monkeypatch.setenv("LOCAL_RANK", "2")
+    @pytest.mark.parametrize("configured", ["cpu", "cuda:3", torch.device("cuda:3"), "cuda", None])
+    def test_device_selection(self, runner_environment, configured):
+        runner_environment(LOCAL_RANK="2")
         runner = object.__new__(TorchRunner)
         runner.config = RunnerConfig({"device": configured})
-        expected = torch.device("cuda", 3 if configured is not None and str(configured) == "cuda:3" else 2)
-        assert runner.device == expected
         if configured is None:
-            monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
-            assert runner.device == torch.device("cpu")
-
-    @pytest.mark.parametrize(("device", "backend"), [("cpu", "gloo"), ("cuda:3", "nccl")])
-    @pytest.mark.parametrize(("world_size", "ft_enabled"), [(2, False), (1, True)])
-    def test_init_distributed_uses_selected_device(self, monkeypatch, device, backend, world_size, ft_enabled) -> None:
-        monkeypatch.setenv("WORLD_SIZE", str(world_size))
-        monkeypatch.setenv("LOCAL_RANK", "1")
-        monkeypatch.delenv("BACKEND", raising=False)
-        monkeypatch.delenv("TORCHELASTIC_RESTART_COUNT", raising=False)
-        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-        selected_devices = []
-        monkeypatch.setattr(torch.cuda, "set_device", selected_devices.append)
-        initialized = False
-        initialization = {}
-
-        def init_process_group(**kwargs):
-            nonlocal initialized
-            initialization.update(kwargs)
-            initialized = True
-
-        monkeypatch.setattr(dist, "is_available", lambda: True)
-        monkeypatch.setattr(dist, "is_initialized", lambda: initialized)
-        monkeypatch.setattr(dist, "init_process_group", init_process_group)
-        monkeypatch.setattr(dist, "get_world_size", lambda: world_size)
-        monkeypatch.setattr(dist, "broadcast_object_list", lambda objects: None)
-        runner = object.__new__(TorchRunner)
-        runner.config = RunnerConfig({"device": device, "ft.enabled": ft_enabled})
-        runner.timestamp = "test-device"
-        runner.init_distributed()
-        assert initialization["backend"] == backend
-        if device == "cpu":
-            assert not selected_devices
+            expected = torch.device("cuda", 2) if torch.cuda.is_available() else torch.device("cpu")
         else:
-            assert selected_devices and all(index == 3 for index in selected_devices)
+            expected = torch.device(configured)
+            if expected.type == "cuda" and expected.index is None:
+                expected = torch.device("cuda", 2)
+        assert runner.device == expected
+
+    @pytest.mark.parametrize("device_type", ["cpu", "cuda"])
+    def test_distributed_device(self, device_type):
+        if device_type == "cuda":
+            require_nccl_cuda(2)
+        else:
+            require_gloo()
+        run_distributed(_selected_device_worker, worker_args=(device_type, False))
 
     @pytest.mark.parametrize("replica_id", [0, 1])
-    def test_single_process_ft_replicas_use_distinct_data_shards(self, monkeypatch, replica_id) -> None:
-        monkeypatch.setenv("WORLD_SIZE", "1")
-        monkeypatch.setenv("RANK", "0")
-        monkeypatch.setattr(dist, "is_initialized", lambda: False)
+    def test_ft_replica_data_shards(self, runner_environment, replica_id) -> None:
+        runner_environment(WORLD_SIZE="1", RANK="0")
+        assert not dist.is_initialized()
         runner = object.__new__(TorchRunner)
         runner.fault_tolerance = SimpleNamespace(
             enabled=True, group_size=2, data_parallel_info=lambda degree, rank: (degree * 2, replica_id + rank)
@@ -1343,22 +1326,15 @@ class TestTorchRunnerDistributedRuntime:
         assert runner.distributed
         assert list(sampler) == [replica_id, replica_id + 2]
 
-    @pytest.mark.parametrize(
-        ("backend", "degree", "expected"), [("nccl", 2, "cuda:0"), ("nccl", 1, "cuda:0"), ("gloo", 2, "cpu")]
-    )
-    def test_ft_collective_payload_supports_the_native_backend(self, monkeypatch, backend, degree, expected) -> None:
-        replica_group = object()
-        runner = object.__new__(TorchRunner)
-        runner.config = RunnerConfig({"device": "cuda:0"})
-        runner.fault_tolerance = SimpleNamespace(enabled=True, group_size=degree, replicate_process_group=replica_group)
-        monkeypatch.setattr(dist, "is_available", lambda: True)
-        monkeypatch.setattr(dist, "is_initialized", lambda: True)
-        monkeypatch.setattr(dist, "get_world_size", lambda group=None: 1 if group is None else degree)
-        monkeypatch.setattr(dist, "get_backend", lambda group=None: backend if group is None else "gloo")
-        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-        assert runner.all_reduce_device() == torch.device(expected)
+    @pytest.mark.parametrize("device_type,world_size", [("cpu", 2), ("cuda", 1), ("cuda", 2)])
+    def test_ft_collective_device(self, device_type, world_size):
+        if device_type == "cuda":
+            require_nccl_cuda(world_size)
+        else:
+            require_gloo()
+        run_distributed(_selected_device_worker, world_size=world_size, worker_args=(device_type, True))
 
-    def test_init_distributed_rejects_preinitialized_process_group(self) -> None:
+    def test_preinitialized_group_rejected(self) -> None:
         require_gloo()
         run_distributed(_torch_runner_preinitialized_pg_worker, world_size=2)
 
@@ -1366,7 +1342,7 @@ class TestTorchRunnerDistributedRuntime:
         require_gloo()
         run_distributed(_torch_runner_nonfinite_skip_sync_worker, world_size=2)
 
-    def test_nonfinite_loss_preserves_and_synchronizes_accumulated_gradients(self) -> None:
+    def test_nonfinite_accumulation_sync(self) -> None:
         require_gloo()
         run_distributed(_torch_runner_nonfinite_loss_accumulation_worker, world_size=2)
 
@@ -1379,7 +1355,7 @@ class TestTorchRunnerDistributedRuntime:
 class TestTorchRunnerOptimization:
 
     @pytest.mark.parametrize("amp", [False, True])
-    def test_discarded_loss_keeps_missing_adamw_gradients_and_amp_state(self, amp) -> None:
+    def test_discarded_adamw_update(self, amp) -> None:
         runner = TinyTorchRunner({"device": "cpu", "logging.enabled": False, "skip_nonfinite_loss": True})
         try:
             runner.optimizer = optim.AdamW(runner.model.parameters(), lr=0.1, weight_decay=0.2)
@@ -1402,7 +1378,7 @@ class TestTorchRunnerOptimization:
         finally:
             runner.close()
 
-    def test_nonfinite_loss_is_replaced_with_zero_before_backward(self) -> None:
+    def test_nonfinite_loss_replacement(self) -> None:
         runner = TinyTorchRunner({"logging.enabled": False, "skip_nonfinite_loss": True})
         assert runner.model is not None
         initial_parameters = [parameter.detach().clone() for parameter in runner.model.parameters()]
@@ -1426,12 +1402,11 @@ class TestTorchRunnerOptimization:
         finally:
             runner.close()
 
-    def test_runner_owned_fp16_requires_cuda(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
-        with pytest.raises(ValueError, match="fp16 precision requires a CUDA device"):
-            TinyTorchRunner({"logging.enabled": False, "precision": "fp16"})
+    def test_fp16_requires_cuda(self):
+        with pytest.raises(ValueError, match="CUDA"):
+            TinyTorchRunner({"logging.enabled": False, "device": "cpu", "precision": "fp16"})
 
-    def test_step_skips_optimizer_update_on_nonfinite_grad(self) -> None:
+    def test_nonfinite_gradient_skip(self) -> None:
         runner = TinyTorchRunner({"logging.enabled": False, "skip_nonfinite_grad": True})
         assert runner.optimizer is not None
         assert runner.model is not None
@@ -1450,7 +1425,7 @@ class TestTorchRunnerOptimization:
         finally:
             runner.close()
 
-    def test_optimizer_step_allows_eval_only_ema_without_update(self) -> None:
+    def test_eval_only_ema(self) -> None:
         runner = TinyTorchRunner({"logging.enabled": False})
         runner.ema = nn.Identity()
         try:
@@ -1464,7 +1439,7 @@ class TestTorchRunnerOptimization:
         finally:
             runner.close()
 
-    def test_optimizer_step_rejects_noncallable_ema_update_before_mutation(self) -> None:
+    def test_invalid_ema_update(self) -> None:
         class BadEma(nn.Module):
             update = "not callable"
 
@@ -1485,7 +1460,7 @@ class TestTorchRunnerOptimization:
         finally:
             runner.close()
 
-    def test_optimizer_step_records_grad_norm_when_clipping(self) -> None:
+    def test_clipped_gradient_norm(self) -> None:
         runner = TinyTorchRunner({"logging.enabled": False, "max_grad_norm": 1.0})
         try:
             assert runner.model is not None
@@ -1499,7 +1474,7 @@ class TestTorchRunnerOptimization:
         finally:
             runner.close()
 
-    def test_steps_standard_pytorch_scheduler_after_optimizer_step(self) -> None:
+    def test_pytorch_scheduler_step(self) -> None:
         runner = TinyStepLRTorchRunner({"logging.enabled": False})
         try:
             assert runner.scheduler is not None
@@ -1518,7 +1493,7 @@ class TestTorchRunnerOptimization:
 
 class TestTorchRunnerScheduling:
 
-    def test_steps_danling_scheduler_after_optimizer_step(self) -> None:
+    def test_danling_scheduler_step(self) -> None:
         runner = TinyTorchRunner({"logging.enabled": False, "sched": {"type": "linear", "total_steps": 8}})
         try:
             assert runner.scheduler is not None
@@ -1534,7 +1509,7 @@ class TestTorchRunnerScheduling:
         finally:
             runner.close()
 
-    def test_defaults_metric_scheduler_to_epoch_interval(self) -> None:
+    def test_metric_scheduler_default_interval(self) -> None:
         runner = TinyPlateauTorchRunner({"logging.enabled": False})
         try:
             assert runner.scheduler_interval == "epoch"
@@ -1551,11 +1526,11 @@ class TestTorchRunnerScheduling:
         finally:
             runner.close()
 
-    def test_rejects_step_interval_for_metric_scheduler(self) -> None:
+    def test_metric_scheduler_rejects_step_interval(self) -> None:
         with pytest.raises(ValueError, match="metric-based schedulers require `sched.interval='epoch'`"):
             TinyPlateauTorchRunner({"logging.enabled": False, "sched": {"interval": "step"}})
 
-    def test_steps_reduce_on_plateau_after_epoch_result(self, tmp_path: Path) -> None:
+    def test_plateau_scheduler_step(self, tmp_path: Path) -> None:
         runner = EpochSchedulerRunner(
             {
                 "logging.enabled": False,
@@ -1577,7 +1552,7 @@ class TestTorchRunnerScheduling:
         finally:
             runner.close()
 
-    def test_steps_epoch_interval_scheduler_once_per_step_mode_train_round(self, tmp_path: Path) -> None:
+    def test_step_mode_epoch_scheduler(self, tmp_path: Path) -> None:
         runner = TinyStepLRTorchRunner(
             {"logging.enabled": False, "workspace.root": str(tmp_path), "steps": 4, "sched": {"interval": "epoch"}}
         )
@@ -1611,44 +1586,22 @@ class TestTorchRunnerScheduling:
         finally:
             runner.close()
 
-    def test_replicated_dtensor_loss_can_be_logged(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(torch_runner_module, "TorchDTensor", _FakeDTensor)
-        runner = TinyTorchRunner({"logging.enabled": False})
-        local = torch.tensor(3.0)
-        tensor = _FakeDTensor(
-            local,
-            [_FakePlacement(replicate=True)],
-        )
+    @pytest.mark.parametrize("placement", ["replicate", "partial", "shard"])
+    def test_dtensor_loss(self, cpu_mesh, placement):
+        from torch.distributed.tensor import DTensor, Partial, Replicate, Shard
 
+        layouts = {"replicate": Replicate(), "partial": Partial(), "shard": Shard(0)}
+        local = torch.tensor([3.0])
+        loss = DTensor.from_local(local, device_mesh=cpu_mesh, placements=[layouts[placement]], run_check=False)
+        runner = TinyTorchRunner({"logging.enabled": False, "device": "cpu"})
         try:
-            loss = runner.reduce_loss_for_logging(tensor, loss_n=1)
-            assert loss is not None
-            torch.testing.assert_close(loss, local.to(dtype=torch.float64))
-        finally:
-            runner.close()
-
-    def test_partial_dtensor_loss_can_be_logged(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(torch_runner_module, "TorchDTensor", _FakeDTensor)
-        monkeypatch.setattr(torch_runner_module, "TorchReplicate", _FakeReplicate)
-        runner = TinyTorchRunner({"logging.enabled": False})
-        local = torch.tensor(3.0)
-        tensor = _FakeDTensor(local, [_FakePlacement(partial=True)])
-
-        try:
-            loss = runner.reduce_loss_for_logging(tensor, loss_n=1)
-            assert loss is not None
-            torch.testing.assert_close(loss, local.to(dtype=torch.float64))
-        finally:
-            runner.close()
-
-    def test_sharded_dtensor_loss_is_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(torch_runner_module, "TorchDTensor", _FakeDTensor)
-        runner = TinyTorchRunner({"logging.enabled": False})
-        tensor = _FakeDTensor(torch.tensor(3.0), [_FakePlacement()])
-
-        try:
-            with pytest.raises(ValueError, match="Cannot reduce DTensor"):
-                runner.reduce_loss_for_logging(tensor, loss_n=1)
+            if placement == "shard":
+                with pytest.raises(ValueError, match="Cannot reduce DTensor"):
+                    runner.reduce_loss_for_logging(loss, loss_n=1)
+            else:
+                torch.testing.assert_close(
+                    runner.reduce_loss_for_logging(loss, loss_n=1), torch.tensor(3.0, dtype=torch.float64)
+                )
         finally:
             runner.close()
 
@@ -1669,13 +1622,13 @@ class TestTorchRunnerScheduling:
 class TestTorchRunnerEpochExecution:
 
     @pytest.mark.parametrize("reduction", ["mean", "sum", "nan"])
-    def test_empty_token_rank_participates_in_global_normalization(self, reduction) -> None:
+    def test_empty_rank_normalization(self, reduction) -> None:
         require_gloo()
         run_distributed(_torch_runner_empty_token_rank_worker, worker_args=(reduction,))
 
     @pytest.mark.parametrize("empty_first", [False, True])
     @pytest.mark.parametrize("invalid", ["empty", "nan"])
-    def test_zero_weight_loss_preserves_other_microbatch_gradients(self, empty_first, invalid) -> None:
+    def test_zero_weight_preserves_accumulation(self, empty_first, invalid) -> None:
         runner = WeightedLossRunner(
             {"device": "cpu", "logging.enabled": False, "accum_steps": 2, "logging.interval": 0}
         )
@@ -1736,7 +1689,7 @@ class TestTorchRunnerEpochExecution:
             runner.close()
 
     @pytest.mark.parametrize("reduction", ["mean", "sum"])
-    def test_real_loss_normalizers_preserve_fractional_weights(self, reduction) -> None:
+    def test_fractional_normalizers(self, reduction) -> None:
         runner = WeightedLossRunner(
             {"device": "cpu", "logging.enabled": False, "accum_steps": 2, "logging.interval": 0}
         )
@@ -1762,7 +1715,7 @@ class TestTorchRunnerEpochExecution:
             runner.close()
 
     @pytest.mark.parametrize("reduction", ["mean", "sum"])
-    def test_empty_loss_window_keeps_optimizer_and_scheduler_unchanged(self, reduction) -> None:
+    def test_empty_window_preserves_update(self, reduction) -> None:
         runner = TinyStepLRTorchRunner(
             {"device": "cpu", "logging.enabled": False, "accum_steps": 2, "logging.interval": 0}
         )
@@ -1790,7 +1743,7 @@ class TestTorchRunnerEpochExecution:
         finally:
             runner.close()
 
-    def test_variable_length_batches_use_token_weighted_loss(self) -> None:
+    def test_token_weighted_loss(self) -> None:
         runner = WeightedLossRunner({"logging.enabled": False, "accum_steps": 2, "logging.interval": 0})
         runner.dataloaders["train"] = [
             (torch.ones((1, 1)), torch.zeros((1, 1))),
@@ -1806,7 +1759,7 @@ class TestTorchRunnerEpochExecution:
         finally:
             runner.close()
 
-    def test_partial_accumulation_window_scales_by_window_size(self) -> None:
+    def test_partial_accumulation_window(self) -> None:
         runner = WeightedLossRunner({"logging.enabled": False, "accum_steps": 4, "logging.interval": 0})
         runner.dataloaders["train"] = [
             (torch.ones((1, 1)), torch.zeros((1, 1))),
@@ -1844,7 +1797,7 @@ class TestTorchRunnerEpochExecution:
         finally:
             runner.close()
 
-    def test_explicit_loss_normalizer_controls_loss_weighting(self) -> None:
+    def test_explicit_loss_normalizer(self) -> None:
         runner = WeightedLossRunner({"logging.enabled": False, "accum_steps": 2})
         runner.dataloaders["train"] = [
             {"input": torch.ones((1, 1)), "target": torch.zeros((1, 1)), "loss_normalizer": 9},
@@ -1859,7 +1812,7 @@ class TestTorchRunnerEpochExecution:
         finally:
             runner.close()
 
-    def test_mean_loss_uses_target_size_as_normalizer(self) -> None:
+    def test_target_loss_normalizer(self) -> None:
         runner = WeightedLossRunner({"logging.enabled": False, "accum_steps": 2})
         runner.dataloaders["train"] = [
             (torch.ones((1, 1)), torch.zeros((1, 1))),
@@ -1872,7 +1825,7 @@ class TestTorchRunnerEpochExecution:
         finally:
             runner.close()
 
-    def test_attention_mask_controls_loss_weighting_without_targets(self) -> None:
+    def test_mask_loss_normalizer(self) -> None:
         runner = MaskWeightedLossRunner({"logging.enabled": False, "accum_steps": 2})
         runner.dataloaders["train"] = [
             {
@@ -1895,7 +1848,7 @@ class TestTorchRunnerEpochExecution:
         finally:
             runner.close()
 
-    def test_custom_batch_schema_uses_unweighted_loss(self) -> None:
+    def test_custom_batch_loss(self) -> None:
         runner = StreamingEpochRunner({"logging.enabled": False})
         runner.dataloaders["train"] = [1.0, 9.0]
 
@@ -1905,7 +1858,7 @@ class TestTorchRunnerEpochExecution:
         finally:
             runner.close()
 
-    def test_train_epoch_skips_peak_memory_sampling_without_interval_logs(self) -> None:
+    def test_unlogged_cpu_telemetry(self) -> None:
         runner = TelemetryRunner({"logging.enabled": False, "logging.interval": 0})
         runner.dataloaders["train"] = [
             {
@@ -1935,7 +1888,7 @@ class TestTorchRunnerEpochExecution:
         finally:
             runner.close()
 
-    def test_train_epoch_reports_nested_tensor_tokens_per_s(self) -> None:
+    def test_nested_token_telemetry(self) -> None:
         runner = TelemetryRunner({"logging.enabled": False, "logging.interval": 0})
         runner.dataloaders["train"] = [
             {
@@ -1968,7 +1921,7 @@ class TestTorchRunnerEpochExecution:
         finally:
             runner.close()
 
-    def test_mode_updates_model_and_ema_training_state(self) -> None:
+    def test_model_and_ema_mode(self) -> None:
         runner = TinyTorchRunner({"logging.enabled": False})
         model = nn.Identity()
         ema = nn.Identity()
@@ -2000,7 +1953,7 @@ class TestTorchRunnerLoopResultStability:
 
     @pytest.mark.parametrize("device", ["cpu", "cuda"])
     @pytest.mark.parametrize("failure", [None, "factory", "evaluation"])
-    def test_training_evaluation_restores_state_rng_and_shared_custom_metrics(self, device, failure) -> None:
+    def test_validation_restores_rng_and_metrics(self, device, failure) -> None:
         if device == "cuda" and not torch.cuda.is_available():
             pytest.skip("CUDA is unavailable")
 
@@ -2008,16 +1961,31 @@ class TestTorchRunnerLoopResultStability:
             def __init__(self):
                 self.observations = ["training"]
 
-            def __deepcopy__(self, memo):
-                raise AssertionError("custom collector must use its factory")
-
             def reset(self):
                 self.observations.clear()
 
             def average(self):
                 return {"score": float(len(self.observations))}
 
-        runner = TinyTorchRunner({"device": device, "logging.enabled": False, "logging.interval": 0})
+        class ValidationRunner(TinyTorchRunner):
+            def write_result(self, result, split, index):
+                writes.append(index)
+
+            def build_evaluation_metrics(self):
+                consume_rng()
+                if failure == "factory":
+                    raise RuntimeError("validation factory failed")
+                return Collector()
+
+            def evaluate_step(self, _data):
+                consume_rng()
+                self.metrics.observations.append("validation")
+                snapshots.extend([self.state_dict(), self._export_checkpoint_local_state()])
+                if failure == "evaluation":
+                    raise RuntimeError("validation evaluation failed")
+                return None, None
+
+        runner = ValidationRunner({"device": device, "logging.enabled": False, "logging.interval": 0})
         try:
             runner.model = nn.Sequential(runner.model, nn.Dropout())
             runner.model.train()
@@ -2031,14 +1999,12 @@ class TestTorchRunnerLoopResultStability:
             meters, loaders = runner.meters, runner.dataloaders
             meters.loss.update(3.0, n=2)
             runner.split = "train"
-            runner._loss_reporting_reduction = "sum"
             runner.train_state.global_step = 7
             runner.dataloaders["val"] = [None]
             python_rng, cpu_rng = random.getstate(), torch.get_rng_state()
             numpy_rng = None if torch_runner_module.np_random is None else torch_runner_module.np_random.get_state()
             cuda_rng = torch.cuda.get_rng_state() if torch.cuda.is_initialized() else None
             writes, snapshots = [], []
-            runner.write_result = lambda result, split, index: writes.append(index)
 
             def consume_rng():
                 random.random()
@@ -2048,22 +2014,6 @@ class TestTorchRunnerLoopResultStability:
                 if cuda_rng is not None:
                     torch.rand(5, device=torch.cuda.current_device())
 
-            def metrics_factory():
-                consume_rng()
-                if failure == "factory":
-                    raise RuntimeError("validation factory failed")
-                return Collector()
-
-            def evaluate_step(_data):
-                consume_rng()
-                runner.metrics.observations.append("validation")
-                snapshots.extend([runner.state_dict(), runner._export_checkpoint_local_state()])
-                if failure == "evaluation":
-                    raise RuntimeError("validation evaluation failed")
-                return None, None
-
-            runner.build_evaluation_metrics = metrics_factory
-            runner.evaluate_step = evaluate_step
             if failure is None:
                 with runner._evaluation_context(["val"]):
                     assert runner.evaluate_epoch("val")["score"] == 1
@@ -2079,7 +2029,6 @@ class TestTorchRunnerLoopResultStability:
             assert runner.dataloaders is loaders
             assert runner.metrics is runner.train_metrics is runner.evaluate_metrics is collector
             assert collector.observations == ["training"]
-            assert runner._loss_reporting_reduction == "sum"
             assert all(module.training == flag for module, flag in flags)
             assert random.getstate() == python_rng
             torch.testing.assert_close(torch.get_rng_state(), cpu_rng)
@@ -2099,8 +2048,13 @@ class TestTorchRunnerLoopResultStability:
             runner.close()
 
     @pytest.mark.parametrize("kind", ["global", "stream", "multitask", "multitask_child"])
-    def test_training_evaluation_preserves_shared_native_collector_state(self, kind) -> None:
-        runner = TinyTorchRunner({"device": "cpu", "logging.enabled": False, "logging.interval": 0})
+    def test_validation_native_collector(self, kind) -> None:
+        class ValidationRunner(TinyTorchRunner):
+            def evaluate_step(self, _data):
+                update(self.metrics, 1)
+                return None, None
+
+        runner = ValidationRunner({"device": "cpu", "logging.enabled": False, "logging.interval": 0})
         try:
             metrics = (
                 GlobalMetrics(mse(), distributed=False) if kind == "global" else StreamMetrics(mse(), distributed=False)
@@ -2126,11 +2080,6 @@ class TestTorchRunnerLoopResultStability:
             runner.evaluate_metrics = validation_metrics
             runner.dataloaders["val"] = [None]
 
-            def evaluate_step(_data):
-                update(runner.metrics, 1)
-                return None, None
-
-            runner.evaluate_step = evaluate_step
             with runner._evaluation_context(["val"]):
                 result = runner.evaluate_epoch("val")
                 assert result["task" if kind in ("multitask", "multitask_child") else "mse"] == pytest.approx(1)
@@ -2140,25 +2089,26 @@ class TestTorchRunnerLoopResultStability:
         finally:
             runner.close()
 
-    def test_training_evaluation_isolates_shared_stateful_metric_callable(self) -> None:
+    def test_validation_stateful_metric(self) -> None:
         from torchmetrics import MeanSquaredError
 
         metric = MeanSquaredError()
         training = StreamMetrics(error=metric, distributed=False)
         evaluation = StreamMetrics(error=metric, distributed=False)
         training.update(torch.tensor([3.0]), torch.zeros(1))
-        runner = TinyTorchRunner({"device": "cpu", "logging.enabled": False, "logging.interval": 0})
+
+        class ValidationRunner(TinyTorchRunner):
+            def evaluate_step(self, _data):
+                self.metrics.update(torch.ones(1), torch.zeros(1))
+                assert self.metrics["error"].metric.compute().item() == pytest.approx(1)
+                return None, None
+
+        runner = ValidationRunner({"device": "cpu", "logging.enabled": False, "logging.interval": 0})
         try:
             runner.metrics = runner.train_metrics = training
             runner.evaluate_metrics = evaluation
             runner.dataloaders["val"] = [None]
 
-            def evaluate_step(_data):
-                runner.metrics.update(torch.ones(1), torch.zeros(1))
-                assert runner.metrics["error"].metric.compute().item() == pytest.approx(1)
-                return None, None
-
-            runner.evaluate_step = evaluate_step
             with runner._evaluation_context(["val"]):
                 assert runner.evaluate_epoch("val")["error"] == pytest.approx(1)
             assert runner.metrics is runner.train_metrics is training
@@ -2168,7 +2118,7 @@ class TestTorchRunnerLoopResultStability:
         finally:
             runner.close()
 
-    def test_training_validation_replays_origin_and_preserves_checkpoint_loader_cursors(self) -> None:
+    def test_validation_loader_origin(self) -> None:
         configuration = {
             "device": "cpu",
             "logging.enabled": False,
@@ -2176,7 +2126,14 @@ class TestTorchRunnerLoopResultStability:
             "dataloader.batch_size": 1,
             "dataloader.shuffle": False,
         }
-        runner = StatefulDatasetTorchRunner(configuration)
+
+        class ValidationRunner(StatefulDatasetTorchRunner):
+            def evaluate_step(self, data):
+                observations.append(data[0][0, 0].item())
+                checkpoints.append(copy.deepcopy(self.state_dict()))
+                return None, None
+
+        runner = ValidationRunner(configuration)
         restored = None
         try:
             runner.datasets["val"] = torch.utils.data.TensorDataset(
@@ -2190,12 +2147,6 @@ class TestTorchRunnerLoopResultStability:
                 next(val_iterator)
             observations, checkpoints = [], []
 
-            def evaluate_step(data):
-                observations.append(data[0][0, 0].item())
-                checkpoints.append(copy.deepcopy(runner.state_dict()))
-                return None, None
-
-            runner.evaluate_step = evaluate_step
             for _ in range(2):
                 with runner._evaluation_context(["val"]):
                     runner.evaluate_steps("val", steps=2)
@@ -2216,14 +2167,16 @@ class TestTorchRunnerLoopResultStability:
                 restored.close()
 
     @pytest.mark.parametrize("factory", [False, True])
-    def test_training_evaluation_requires_an_independent_shared_custom_collector(self, factory) -> None:
-        runner = TinyTorchRunner({"device": "cpu", "logging.enabled": False})
+    def test_validation_requires_independent_collector(self, factory) -> None:
+        class InvalidCollectorRunner(TinyTorchRunner):
+            def build_evaluation_metrics(self):
+                return collector if factory else super().build_evaluation_metrics()
+
+        runner = InvalidCollectorRunner({"device": "cpu", "logging.enabled": False})
         try:
             collector = object()
             runner.metrics = runner.train_metrics = runner.evaluate_metrics = collector
             runner.dataloaders["val"] = [None]
-            if factory:
-                runner.build_evaluation_metrics = lambda: collector
             with (
                 pytest.raises(TypeError, match="fresh collector|training collector"),
                 runner._evaluation_context(["val"]),
@@ -2234,15 +2187,23 @@ class TestTorchRunnerLoopResultStability:
         finally:
             runner.close()
 
-    def test_training_evaluation_custom_stream_uses_explicit_origin_factory(self) -> None:
-        runner = StreamingEpochRunner({"device": "cpu", "logging.enabled": False, "logging.interval": 0})
+    def test_validation_stream_origin(self) -> None:
+        class StreamingRunner(StreamingEpochRunner):
+            fresh_stream = False
+
+            def build_evaluation_dataloader(self, split):
+                if self.fresh_stream:
+                    return StreamingLoader(4.0, 6.0)
+                return super().build_evaluation_dataloader(split)
+
+        runner = StreamingRunner({"device": "cpu", "logging.enabled": False, "logging.interval": 0})
         try:
             stream = iter([1.0, 2.0, 3.0])
             runner.dataloaders["val"] = stream
             assert next(stream) == 1
             with pytest.raises(TypeError, match="build_evaluation_dataloader"), runner._evaluation_context(["val"]):
                 pytest.fail("one-shot streams need a fresh-origin factory")
-            runner.build_evaluation_dataloader = lambda split: StreamingLoader(4.0, 6.0)
+            runner.fresh_stream = True
             for _ in range(2):
                 with runner._evaluation_context(["val"]):
                     assert runner.evaluate_steps("val", steps=2)["loss"] == pytest.approx(5)
@@ -2251,7 +2212,7 @@ class TestTorchRunnerLoopResultStability:
             runner.close()
 
     @pytest.mark.parametrize("steps", [None, 0, 1])
-    def test_evaluation_uses_fresh_meter_schema_and_keeps_results_readable(self, steps) -> None:
+    def test_evaluation_meter_schema(self, steps) -> None:
         class Collector:
             def __init__(self):
                 self.observations = ["previous"]
@@ -2262,7 +2223,12 @@ class TestTorchRunnerLoopResultStability:
             def average(self):
                 return {"loss.avg": 7.0}
 
-        runner = TinyTorchRunner({"logging.enabled": False, "logging.interval": 0})
+        class ValidationRunner(TinyTorchRunner):
+            def evaluate_step(self, _data):
+                self.evaluate_metrics.observations.append("validation")
+                return None, None
+
+        runner = ValidationRunner({"logging.enabled": False, "logging.interval": 0})
         try:
             collector = Collector()
             runner.evaluate_metrics = collector
@@ -2271,11 +2237,6 @@ class TestTorchRunnerLoopResultStability:
             runner.meters.grad_norm.update(1.0)
             runner.dataloaders["val"] = [None]
 
-            def evaluate_step(_data):
-                collector.observations.append("validation")
-                return None, None
-
-            runner.evaluate_step = evaluate_step
             result = runner.evaluate_epoch("val") if steps is None else runner.evaluate_steps("val", steps=steps)
             assert result["loss.avg"] == 7.0
             assert "lr" not in result and "grad_norm" not in result
@@ -2286,25 +2247,17 @@ class TestTorchRunnerLoopResultStability:
         finally:
             runner.close()
 
-    def test_train_epoch_result_is_independent_of_log_interval(self) -> None:
-        runner = StreamingEpochRunner({"logging.enabled": False, "logging.interval": 2})
+    @pytest.mark.parametrize("operation,split", [("train_epoch", "train"), ("evaluate_epoch", "val")])
+    @pytest.mark.parametrize("interval", [0, 1, 2])
+    def test_epoch_result_interval(self, operation, split, interval):
+        runner = StreamingEpochRunner({"logging.enabled": False, "logging.interval": interval})
         try:
-            runner.dataloaders["train"] = [1.0, 2.0, 3.0]
-            result = runner.train_epoch("train")
-            assert result["loss"] == pytest.approx(2.0)
+            runner.dataloaders[split] = [1.0, 2.0, 3.0]
+            assert getattr(runner, operation)(split)["loss"] == pytest.approx(2.0)
         finally:
             runner.close()
 
-    def test_evaluate_epoch_result_is_independent_of_log_interval(self) -> None:
-        runner = StreamingEpochRunner({"logging.enabled": False, "logging.interval": 2})
-        try:
-            runner.dataloaders["val"] = [1.0, 2.0, 3.0]
-            result = runner.evaluate_epoch("val")
-            assert result["loss"] == pytest.approx(2.0)
-        finally:
-            runner.close()
-
-    def test_evaluate_epoch_allows_zero_weight_padding(self) -> None:
+    def test_zero_weight_evaluation(self) -> None:
         class ZeroWeightedEvaluationRunner(StreamingEpochRunner):
             def _get_loss_normalizer(self, data):
                 return int(data[1])
@@ -2323,7 +2276,7 @@ class TestTorchRunnerLoopResultStability:
 
 class TestTorchRunnerStepExecution:
 
-    def test_resume_after_split_last_update_continues_next_round(self, tmp_path: Path) -> None:
+    def test_split_boundary_resume(self, tmp_path: Path) -> None:
         class BoundaryRunner(TinyTorchRunner):
             def __init__(self, config):
                 super().__init__(config)
@@ -2374,7 +2327,7 @@ class TestTorchRunnerStepExecution:
             if restored is not None:
                 restored.close()
 
-    def test_train_steps_result_is_independent_of_log_interval(self, tmp_path: Path) -> None:
+    def test_step_result_interval(self, tmp_path: Path) -> None:
         runner = StreamingEpochRunner(
             {"logging.enabled": False, "workspace.root": str(tmp_path), "steps": 3, "logging.interval": 2}
         )
@@ -2385,7 +2338,7 @@ class TestTorchRunnerStepExecution:
         finally:
             runner.close()
 
-    def test_train_steps_writes_full_latest_and_model_checkpoint(self, tmp_path: Path) -> None:
+    def test_step_checkpoint_exports(self, tmp_path: Path) -> None:
         runner = StreamingEpochRunner(
             {
                 "logging.enabled": False,
@@ -2412,9 +2365,7 @@ class TestTorchRunnerStepExecution:
         finally:
             runner.close()
 
-    def test_train_steps_logs_once_per_optimizer_step_under_accumulation(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_accumulated_update_logging(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         runner = StreamingEpochRunner(
             {
                 "logging.enabled": False,
@@ -2432,7 +2383,7 @@ class TestTorchRunnerStepExecution:
         finally:
             runner.close()
 
-    def test_train_steps_shares_budget_across_splits(self, tmp_path: Path) -> None:
+    def test_shared_split_budget(self, tmp_path: Path) -> None:
         runner = StreamingEpochRunner(
             {"logging.enabled": False, "workspace.root": str(tmp_path), "steps": 2, "logging.interval": 0}
         )
@@ -2449,7 +2400,7 @@ class TestTorchRunnerStepExecution:
         finally:
             runner.close()
 
-    def test_train_steps_rolls_loader_epoch_after_exhaustion(self, tmp_path: Path) -> None:
+    def test_loader_epoch_rollover(self, tmp_path: Path) -> None:
         class EpochAwareLoader:
             batch_sampler = None
 
@@ -2481,9 +2432,7 @@ class TestTorchRunnerStepExecution:
         finally:
             runner.close()
 
-    def test_train_steps_uses_monotonic_progress_across_loader_rollover(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_rollover_progress(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         runner = StreamingEpochRunner(
             {"logging.enabled": False, "workspace.root": str(tmp_path), "steps": 3, "logging.interval": 1}
         )
@@ -2500,7 +2449,7 @@ class TestTorchRunnerStepExecution:
 
 class TestPeriodicEvaluation:
 
-    def test_validation_budget_works_without_an_interval(self, tmp_path):
+    def test_validation_budget(self, tmp_path):
         class RecordingRunner(StreamingEpochRunner):
             def __init__(self, config):
                 super().__init__(config)
@@ -2528,7 +2477,7 @@ class TestPeriodicEvaluation:
         finally:
             runner.close()
 
-    def test_cadence_counts_updates_and_best_contains_complete_validation(self, tmp_path):
+    def test_validation_cadence_and_best(self, tmp_path):
         class ScoredRunner(WeightedLossRunner):
             def __init__(self, config):
                 super().__init__(config)
@@ -2575,7 +2524,7 @@ class TestPeriodicEvaluation:
         finally:
             runner.close()
 
-    def test_epoch_boundaries_share_global_step_indices_and_do_not_repeat_validation(self, tmp_path):
+    def test_epoch_validation_indices(self, tmp_path):
         class EpochRunner(StreamingEpochRunner):
             def __init__(self, config):
                 super().__init__(config)
@@ -2606,7 +2555,7 @@ class TestPeriodicEvaluation:
         finally:
             runner.close()
 
-    def test_failed_split_does_not_publish_partial_results(self, tmp_path):
+    def test_validation_split_failure(self, tmp_path):
         class FailingRunner(StreamingEpochRunner):
             def evaluate_step(self, data):
                 if self.split == "broken":
@@ -2635,7 +2584,7 @@ class TestPeriodicEvaluation:
         finally:
             runner.close()
 
-    def test_mid_epoch_validation_keeps_checkpoint_history_on_epoch_boundaries(self, tmp_path):
+    def test_validation_checkpoint_history(self, tmp_path):
         class ScoredRunner(StreamingEpochRunner):
             def evaluate_step(self, data):
                 del data
@@ -2670,7 +2619,7 @@ class TestPeriodicEvaluation:
         finally:
             runner.close()
 
-    def test_validation_and_resume_preserve_stochastic_training(self, tmp_path):
+    def test_stochastic_validation_resume(self, tmp_path):
         class StochasticRunner(TinyTorchRunner):
             def __init__(self, config):
                 super().__init__(config)
@@ -2759,7 +2708,7 @@ class TestPeriodicEvaluation:
             restored.close()
 
     @pytest.mark.parametrize("source_interval", [0, 1])
-    def test_epoch_resume_rejects_switching_result_index_conventions(self, tmp_path, source_interval):
+    def test_resume_index_convention(self, tmp_path, source_interval):
         config = {"device": "cpu", "logging.enabled": False, "epochs": 2, "ckpt.enabled": False}
         source = StreamingEpochRunner(
             {**config, "workspace.dir": str(tmp_path / "source"), "evaluation.interval": source_interval}
@@ -2778,7 +2727,7 @@ class TestPeriodicEvaluation:
 
 class TestTorchRunnerStepEvaluation:
 
-    def test_evaluate_steps_result_is_independent_of_log_interval(self) -> None:
+    def test_evaluation_step_result_interval(self) -> None:
         runner = StreamingEpochRunner({"logging.enabled": False, "logging.interval": 2})
         try:
             runner.dataloaders["val"] = [1.0, 2.0, 3.0]
@@ -2797,7 +2746,7 @@ class TestTorchRunnerSignalsAndShutdown:
 
     @pytest.mark.parametrize("step_mode", [False, True])
     @pytest.mark.parametrize("before_loop", [False, True])
-    def test_sigterm_resume_keeps_every_consumed_training_batch(self, tmp_path, step_mode, before_loop) -> None:
+    def test_sigterm_batch_resume(self, tmp_path, step_mode, before_loop) -> None:
         class ShutdownRunner(StreamingEpochRunner):
             def __init__(self, config):
                 super().__init__(config)
@@ -2843,40 +2792,56 @@ class TestTorchRunnerSignalsAndShutdown:
         finally:
             restored.close()
 
-    def test_recovery_restores_loader_before_selecting_each_window(self, tmp_path) -> None:
-        runner = StatefulDatasetTorchRunner(
+    def test_recovery_loader_window(self, tmp_path) -> None:
+        class RecoveryRunner(StreamingEpochRunner):
+            def __init__(self, config):
+                super().__init__(config)
+                self.datasets["train"] = list(range(8))
+                self.consumed = []
+
+            def train_step(self, data):
+                self.consumed.append(int(data.item()))
+                return super().train_step(data)
+
+        runner = RecoveryRunner(
             {
                 "device": "cpu",
                 "logging.enabled": False,
+                "logging.interval": 0,
                 "workspace.dir": str(tmp_path),
+                "steps": 2,
+                "ckpt.enabled": False,
                 "dataloader": {"batch_size": 1, "shuffle": False},
             }
         )
         try:
-            loader = runner.dataloaders["train"]
-            states = []
-            iterator = iter(loader)
+            states = {}
+            iterator = iter(runner.dataloaders["train"])
             for index in range(5):
                 next(iterator)
                 if index in (1, 4):
-                    states.append(runner.dataloaders.state_dict())
+                    states[len(states)] = runner.dataloaders.state_dict()
 
             class Recovery:
+                enabled = False
+                replicate_process_group = None
+
                 def begin_step(self):
-                    runner.load_dataloaders(states.pop(0))
+                    state = states.pop(runner.train_state.global_step, None)
+                    if state is not None:
+                        runner.load_dataloaders(state)
 
                 def close(self):
                     pass
 
             runner.fault_tolerance = Recovery()
-            batches = runner._iter_train_batches(loader)
-            assert next(batches)[1].item() == 2
-            runner.train_state.micro_step += 1
-            assert next(batches)[1].item() == 5
+            runner.train_steps(["train"], [])
+            assert runner.consumed == [2, 5]
+            assert runner.train_state.global_step == 2
         finally:
             runner.close()
 
-    def test_step_mode_resume_preserves_split_target_and_sampler_epoch(self, tmp_path) -> None:
+    def test_step_mode_split_resume(self, tmp_path) -> None:
         class SplitRunner(StreamingEpochRunner):
             def __init__(self, config):
                 super().__init__(config)
@@ -2975,7 +2940,7 @@ class TestTorchRunnerSignalsAndShutdown:
         assert runner.train_state.micro_step == 0
 
 
-def test_bounded_inference_and_evaluation_do_not_consume_extra_batches(tmp_path):
+def test_bounded_read_count(tmp_path):
     class CountingLoader:
         def __init__(self):
             self.reads = []

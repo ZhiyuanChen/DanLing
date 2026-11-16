@@ -86,12 +86,12 @@ def _context_sum_worker(rank: int, world_size: int) -> None:
                 torch.testing.assert_close(actual, original.detach() - 0.125 * gradient, rtol=1e-12, atol=1e-12)
 
 
-def test_context_sum_preserves_ragged_queries_vjps_and_replica_update() -> None:
+def test_ragged_context_update() -> None:
     require_gloo(world_size=4)
     run_distributed(_context_sum_worker, world_size=4)
 
 
-def test_autograd_sum_singleton_and_unsupported_reduction() -> None:
+def test_autograd_sum_contract() -> None:
     topology = ParallelTopology(world_size=1, rank=0, axes={"context": 1})
     parallel = ParallelContext(topology)
     value = torch.tensor([2.0], requires_grad=True)

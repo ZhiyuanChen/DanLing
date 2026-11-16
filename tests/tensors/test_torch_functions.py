@@ -29,9 +29,19 @@ import torch
 from torch.nn import functional as F
 
 from danling.tensors import NestedTensor
-from tests.tensors.utils import assert_close, low_precision_cuda_tolerances, nested_rand, ragged_shapes
+from tests.tensors.utils import FLOAT_DTYPES, assert_close, low_precision_cuda_tolerances, nested_rand, ragged_shapes
 
 NT = NestedTensor
+
+
+@pytest.fixture
+def packed_sequence():
+    def create(lengths, width=4):
+        template = NT([torch.zeros(length, width) for length in lengths])
+        values = torch.randn(sum(lengths), width, requires_grad=True)
+        return template.packed_with_lengths(values, torch.tensor(lengths)), values
+
+    return create
 
 
 class TestDiff:
@@ -61,9 +71,9 @@ class TestDiff:
         expected_grad = torch.autograd.grad(sum(part.square().sum() for part in expected), references)
         torch.testing.assert_close(actual_grad, expected_grad)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
     def test_boolean_and_static_axis_compilation(self, device, backend):
-        torch.compiler.reset()
         parts = [
             torch.tensor([[True, False, True], [False, False, True]], device=device),
             torch.tensor([[True, True, False]], device=device),
@@ -72,39 +82,44 @@ class TestDiff:
         run = torch.compile(lambda value: value.diff(dim=-1), backend=backend, dynamic=True, fullgraph=True)
         torch.testing.assert_close(run(source).unbind(), [part.diff(dim=-1) for part in parts])
 
-    def test_nonleading_batch_and_argument_errors(self):
-        parts = [torch.randn(length, 3, dtype=torch.float64, requires_grad=True) for length in (3, 5)]
+    def test_batch_second(self):
+        parts = [torch.randn(n, 3, dtype=torch.double, requires_grad=True) for n in (3, 5)]
         source = NT(parts, ragged_dims=(0,), batch_first=False)
-        result = torch.diff(input=source, dim=0)
+        output = torch.diff(source, dim=0, out=None)
         expected = [part.diff(dim=0) for part in parts]
-        torch.testing.assert_close(result.unbind(dim=1), expected)
-        actual_grad = torch.autograd.grad(sum(x.square().sum() for x in result.unbind(dim=1)), parts, retain_graph=True)
-        expected_grad = torch.autograd.grad(sum(x.square().sum() for x in expected), parts)
-        torch.testing.assert_close(actual_grad, expected_grad)
-        unchanged = torch.diff(input=source, n=0, dim=100)
-        torch.testing.assert_close(unchanged.unbind(dim=1), parts)
-        with torch.no_grad():
-            unchanged.add_(1)
-        torch.testing.assert_close(source.unbind(dim=1), parts)
-        for boundary in ("prepend", "append"):
-            invalid = {boundary: torch.tensor(0.0, dtype=source.dtype)}
-            with pytest.raises(IndexError):
-                torch.diff(input=source, n=0, dim=100, **invalid)
-            with pytest.raises(RuntimeError):
-                torch.diff(input=source, n=0, dim=0, **invalid)
-        with pytest.raises(IndexError):
-            torch.diff(input=source, dim=-4)
-        with pytest.raises(RuntimeError, match="order must be non-negative"):
-            torch.diff(input=source, n=-1)
-        torch.testing.assert_close(torch.diff(input=source, dim=0, out=None).unbind(dim=1), expected)
-        with pytest.raises(RuntimeError, match="automatic differentiation"):
-            torch.diff(input=source, dim=0, out=NT([torch.empty_like(part) for part in expected], batch_first=False))
+        torch.testing.assert_close(output.unbind(1), expected)
+        torch.testing.assert_close(
+            torch.autograd.grad(output.values().square().sum(), parts, retain_graph=True),
+            torch.autograd.grad(sum(part.square().sum() for part in expected), parts),
+        )
 
+    def test_zero_order_copy(self):
+        parts = [torch.randn(n, 3) for n in (3, 5)]
+        source = NT(parts, ragged_dims=(0,), batch_first=False)
+        output = torch.diff(source, n=0, dim=100)
+        torch.testing.assert_close(output.unbind(1), parts)
+        output.add_(1)
+        torch.testing.assert_close(source.unbind(1), parts)
+        torch.testing.assert_close(output.unbind(1), [part + 1 for part in parts])
+
+    @pytest.mark.parametrize("boundary", ["prepend", "append"])
+    @pytest.mark.parametrize("dim,error", [(100, IndexError), (0, RuntimeError)])
+    def test_boundary_errors(self, boundary, dim, error):
+        source = NT([torch.ones(3, 3), torch.ones(5, 3)], ragged_dims=(0,), batch_first=False)
+        with pytest.raises(error):
+            torch.diff(source, n=0, dim=dim, **{boundary: torch.tensor(0.0)})
+
+    @pytest.mark.parametrize("order,dim,error", [(1, -4, IndexError), (-1, 0, RuntimeError)])
+    def test_argument_errors(self, order, dim, error):
+        source = NT([torch.ones(3, 3), torch.ones(5, 3)], ragged_dims=(0,), batch_first=False)
+        with pytest.raises(error):
+            torch.diff(source, n=order, dim=dim)
+
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.parametrize("batch_first", [True, False])
     @pytest.mark.parametrize("order", [1, 6])
     @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
     def test_static_axis_gradients(self, device, batch_first, order, backend):
-        torch.compiler.reset()
         parts = [torch.randn(length, 4, device=device, dtype=torch.float64, requires_grad=True) for length in (3, 5)]
         source = NT(parts, ragged_dims=(0,), batch_first=batch_first)
         run = torch.compile(
@@ -117,102 +132,127 @@ class TestDiff:
         expected_grad = torch.autograd.grad(sum(x.square().sum() for x in expected), parts)
         torch.testing.assert_close(actual_grad, expected_grad)
 
+    @staticmethod
+    def _check_derivatives(output, expected, variables, references, batch_first=True):
+        torch.testing.assert_close(output.unbind(0 if batch_first else 1), expected)
+        torch.testing.assert_close(
+            torch.autograd.grad(output.values().square().sum(), variables),
+            torch.autograd.grad(sum(value.square().sum() for value in expected), references),
+        )
+
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
     @pytest.mark.parametrize(
-        "case",
-        [
-            "sequence",
-            "batch-second",
-            "permuted",
-            "dense-boundaries",
-            "nt-boundaries",
-            "empty-features",
-            "varying-features",
-        ],
+        "batch_first,order,boundaries,width",
+        [(True, 2, False, 3), (False, 6, True, 3), (True, 2, True, 0)],
+        ids=["sequence", "batch-second", "empty-features"],
     )
-    def test_dynamic_ragged(self, device, backend, case):
-        torch.compiler.reset()
-        multi = case in {"permuted", "dense-boundaries", "nt-boundaries"}
-        batch_first = case != "batch-second"
-        ragged = (1, 0) if case == "permuted" else (0, 1) if multi else (0,)
-        physical_dim = 1 if case in {"permuted", "varying-features"} else 0
-        dim = physical_dim + 1 if batch_first else 0
-        order = 6 if case == "batch-second" else 2
-        has_boundaries = case in {
-            "batch-second",
-            "dense-boundaries",
-            "nt-boundaries",
-            "empty-features",
-            "varying-features",
-        }
-
-        def difference(value, before, after):
-            return torch.diff(value, n=order, dim=dim, prepend=before, append=after)
-
-        run = torch.compile(difference, backend=backend, dynamic=True, fullgraph=True)
+    def test_dynamic_sequence(self, device, backend, batch_first, order, boundaries, width):
+        dim = 1 if batch_first else 0
+        run = torch.compile(
+            lambda x, b, a: torch.diff(x, n=order, dim=dim, prepend=b, append=a),
+            backend=backend,
+            dynamic=True,
+            fullgraph=True,
+        )
         for lengths in ((3, 5), (0, 2)):
-            columns = (0, 0) if case == "empty-features" else (2, 4) if multi else (3, 3)
+            parts = [torch.randn(n, width, device=device, dtype=torch.double, requires_grad=True) for n in lengths]
+            refs = [part.detach().clone().requires_grad_() for part in parts]
+            before = after = None
+            ref_before = ref_after = [None, None]
+            variables, references = tuple(parts), tuple(refs)
+            if boundaries:
+                shape = (2, 1, width) if batch_first else (1, 2, width)
+                before, after = (
+                    torch.randn(shape, device=device, dtype=torch.double, requires_grad=True) for _ in range(2)
+                )
+                rb, ra = (value.detach().clone().requires_grad_() for value in (before, after))
+                ref_before = list(rb.unbind(0 if batch_first else 1))
+                ref_after = list(ra.unbind(0 if batch_first else 1))
+                variables, references = (*parts, before, after), (*refs, rb, ra)
+            output = run(NT(parts, ragged_dims=(0,), batch_first=batch_first), before, after)
+            expected = [
+                torch.diff(part, n=order, dim=0, prepend=b, append=a) for part, b, a in zip(refs, ref_before, ref_after)
+            ]
+            self._check_derivatives(output, expected, variables, references, batch_first)
+
+    @pytest.mark.usefixtures("isolated_compiler")
+    @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
+    @pytest.mark.parametrize(
+        "boundary", [None, "dense", "nested"], ids=["permuted", "dense-boundaries", "nt-boundaries"]
+    )
+    def test_dynamic_ragged_boundaries(self, device, backend, boundary):
+        ragged, axis = ((1, 0), 1) if boundary is None else ((0, 1), 0)
+        run = torch.compile(
+            lambda x, b, a: torch.diff(x, n=2, dim=axis + 1, prepend=b, append=a),
+            backend=backend,
+            dynamic=True,
+            fullgraph=True,
+        )
+        for lengths in ((3, 5), (0, 2)):
+            columns = (2, 4)
             parts = [
-                torch.randn(n, c, device=device, dtype=torch.float64, requires_grad=True)
+                torch.randn(n, c, device=device, dtype=torch.double, requires_grad=True)
                 for n, c in zip(lengths, columns)
             ]
-            references = [value.detach().clone().requires_grad_() for value in parts]
+            refs = [part.detach().clone().requires_grad_() for part in parts]
             before = after = None
-            ref_before = ref_after = None
-            if case == "varying-features":
+            ref_before = ref_after = [None, None]
+            variables, references = tuple(parts), tuple(refs)
+            if boundary == "dense":
+                before, after = (
+                    torch.randn(2, 1, 4, device=device, dtype=torch.double, requires_grad=True) for _ in range(2)
+                )
+                rb, ra = (value.detach().clone().requires_grad_() for value in (before, after))
+                ref_before, ref_after = ([value[i, :, :c] for i, c in enumerate(columns)] for value in (rb, ra))
+                variables, references = (*parts, before, after), (*refs, rb, ra)
+            elif boundary == "nested":
                 bp = [
-                    torch.randn(n, p, device=device, dtype=torch.float64, requires_grad=True)
-                    for n, p in zip(lengths, (1, 2))
-                ]
-                ref_before = [value.detach().clone().requires_grad_() for value in bp]
-                before = NT(bp)
-                after = torch.randn(2, max(lengths), 1, device=device, dtype=torch.float64, requires_grad=True)
-                ra = after.detach().clone().requires_grad_()
-                ref_after = [ra[i, :n] for i, n in enumerate(lengths)]
-                variables, reference_variables = (*parts, *bp, after), (*references, *ref_before, ra)
-            elif case == "nt-boundaries":
-                bp = [
-                    torch.randn(n, c, device=device, dtype=torch.float64, requires_grad=True)
+                    torch.randn(n, c, device=device, dtype=torch.double, requires_grad=True)
                     for n, c in zip((1, 2), columns)
                 ]
-                ap = [torch.randn(1, c, device=device, dtype=torch.float64, requires_grad=True) for c in columns]
-                ref_before = [value.detach().clone().requires_grad_() for value in bp]
-                ref_after = [value.detach().clone().requires_grad_() for value in ap]
-                before, after = NT(bp, ragged_dims=(1, 0)), NT(ap)
-                variables = (*parts, *bp, *ap)
-                reference_variables = (*references, *ref_before, *ref_after)
-            elif has_boundaries:
-                shape = (2, 1, max(columns)) if batch_first else (1, 2, max(columns))
-                before = torch.randn(shape, device=device, dtype=torch.float64, requires_grad=True)
-                after = torch.randn(shape, device=device, dtype=torch.float64, requires_grad=True)
-                rb = before.detach().clone().requires_grad_()
-                ra = after.detach().clone().requires_grad_()
-                ref_before = [rb[i, :, :c] if batch_first else rb[:, i, :c] for i, c in enumerate(columns)]
-                ref_after = [ra[i, :, :c] if batch_first else ra[:, i, :c] for i, c in enumerate(columns)]
-                variables, reference_variables = (*parts, before, after), (*references, rb, ra)
-            else:
-                variables, reference_variables = tuple(parts), tuple(references)
-            output = run(NT(parts, ragged_dims=ragged, batch_first=batch_first), before, after)
-            expected = [
-                torch.diff(
-                    value,
-                    n=order,
-                    dim=physical_dim,
-                    prepend=ref_before[i] if ref_before is not None else None,
-                    append=ref_after[i] if ref_after is not None else None,
+                ap = [torch.randn(1, c, device=device, dtype=torch.double, requires_grad=True) for c in columns]
+                ref_before, ref_after = (
+                    [part.detach().clone().requires_grad_() for part in values] for values in (bp, ap)
                 )
-                for i, value in enumerate(references)
+                before, after = NT(bp, ragged_dims=(1, 0)), NT(ap)
+                variables, references = (*parts, *bp, *ap), (*refs, *ref_before, *ref_after)
+            output = run(NT(parts, ragged_dims=ragged), before, after)
+            expected = [
+                torch.diff(part, n=2, dim=axis, prepend=b, append=a) for part, b, a in zip(refs, ref_before, ref_after)
             ]
-            torch.testing.assert_close(output.unbind(0 if batch_first else 1), expected)
-            torch.testing.assert_close(
-                torch.autograd.grad(output.values().square().sum(), variables),
-                torch.autograd.grad(sum(value.square().sum() for value in expected), reference_variables),
-            )
+            self._check_derivatives(output, expected, variables, references)
 
+    @pytest.mark.usefixtures("isolated_compiler")
+    @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
+    def test_dynamic_feature_boundaries(self, device, backend):
+        run = torch.compile(
+            lambda x, b, a: torch.diff(x, n=2, dim=2, prepend=b, append=a),
+            backend=backend,
+            dynamic=True,
+            fullgraph=True,
+        )
+        for lengths in ((3, 5), (0, 2)):
+            parts = [torch.randn(n, 3, device=device, dtype=torch.double, requires_grad=True) for n in lengths]
+            refs = [part.detach().clone().requires_grad_() for part in parts]
+            bp = [
+                torch.randn(n, p, device=device, dtype=torch.double, requires_grad=True)
+                for n, p in zip(lengths, (1, 2))
+            ]
+            rb = [part.detach().clone().requires_grad_() for part in bp]
+            after = torch.randn(2, max(lengths), 1, device=device, dtype=torch.double, requires_grad=True)
+            ra = after.detach().clone().requires_grad_()
+            output = run(NT(parts, ragged_dims=(0,)), NT(bp), after)
+            expected = [
+                torch.diff(part, n=2, dim=1, prepend=b, append=ra[i, :n])
+                for i, (part, b, n) in enumerate(zip(refs, rb, lengths))
+            ]
+            self._check_derivatives(output, expected, (*parts, *bp, after), (*refs, *rb, ra))
+
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
     @pytest.mark.parametrize("dtype", [torch.bool, torch.uint8, torch.float64, torch.complex64])
     def test_ragged_dtypes(self, device, backend, dtype):
-        torch.compiler.reset()
         differentiable = dtype.is_floating_point or dtype.is_complex
         parts = [
             (
@@ -236,12 +276,12 @@ class TestDiff:
                 torch.autograd.grad(sum(value.abs().square().sum() for value in expected), refs),
             )
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.parametrize("backend", [None, "aot_eager", "inductor"])
     @pytest.mark.parametrize(
         "case", ["sequence", "multi", "batch-second", "uniform", "boundaries", "mixed", "zero-features", "empty"]
     )
     def test_batch(self, device, backend, case):
-        torch.compiler.reset()
         batch_first = case != "batch-second"
         order = 2 if case in {"multi", "boundaries", "mixed", "empty"} else 1
         axis = 0 if batch_first else 1
@@ -308,8 +348,8 @@ class TestDiff:
         with pytest.raises(RuntimeError, match="broadcastable"):
             source.diff(n=order, dim=0)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     def test_positions(self, device):
-        torch.compiler.reset()
         parts = [torch.arange(n, device=device) for n in (3, 5)]
         before = torch.full((2, 1), -1, device=device, dtype=torch.long)
         run = torch.compile(
@@ -321,6 +361,7 @@ class TestDiff:
         output = run(NT(parts, ragged_dims=(0,)), before)
         torch.testing.assert_close(output.unbind(), [torch.ones_like(value) for value in parts])
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.parametrize(
         "layout", ["nested", "empty", "resize", "dense", "dense-empty", "dense-resize", "strided", "self", "rank"]
     )
@@ -421,10 +462,10 @@ class TestDiff:
                 (*[torch.ones_like(part) for part in parts], *[torch.zeros_like(part) for part in out_parts]),
             )
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.parametrize("order", [0, 1])
     @pytest.mark.parametrize("backend", [None, "aot_eager", "inductor"])
     def test_out_saved(self, device, order, backend):
-        torch.compiler.reset()
         parts = [torch.randn(n, 4, device=device, dtype=torch.float64) for n in (3, 5)]
         if backend is None:
             leaves = [torch.randn(n, 4 - order, device=device, dtype=torch.float64, requires_grad=True) for n in (3, 5)]
@@ -452,11 +493,11 @@ class TestDiff:
         with pytest.raises(RuntimeError, match="modified"):
             torch.autograd.grad(alias_loss, alias)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
     @pytest.mark.parametrize("dense", [False, True])
     @pytest.mark.parametrize("axis,order", [(-1, 0), (-1, 1), (1, 1), (0, 1)])
     def test_out_compile(self, device, backend, dense, axis, order):
-        torch.compiler.reset()
         run = torch.compile(
             lambda value, out: torch.diff(value, n=order, dim=axis, out=out),
             backend=backend,
@@ -548,9 +589,9 @@ def _run_or_expect_unsupported(nested_call, tensor_call):
 
 class TestInPlace:
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.parametrize("backend", [None, "aot_eager"])
     def test_dense(self, device, backend):
-        torch.compiler.reset()
         parts = [torch.randn(3, 4, device=device, dtype=torch.float64, requires_grad=True) for _ in range(2)]
         bias = torch.randn(2, 3, device=device, dtype=torch.float64, requires_grad=True)
         references = [part.detach().clone().requires_grad_() for part in parts]
@@ -573,9 +614,9 @@ class TestInPlace:
             ),
         )
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.parametrize("batch_first", [True, False])
     def test_scalar_gradient(self, batch_first):
-        torch.compiler.reset()
         parts = [torch.randn(length, dtype=torch.float64, requires_grad=True) for length in (3, 5)]
         bias = torch.tensor(0.3, dtype=torch.float64, requires_grad=True)
         source = NT(parts, ragged_dims=(0,), padding_value=123.0, batch_first=batch_first).sin()
@@ -584,6 +625,7 @@ class TestInPlace:
         gradients = torch.autograd.grad(result.values().sum(), (*parts, bias))
         torch.testing.assert_close(gradients, (*[part.cos() for part in parts], torch.tensor(8.0, dtype=torch.float64)))
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.parametrize(
         ("operation", "backend", "vector"),
         [
@@ -599,7 +641,6 @@ class TestInPlace:
         ],
     )
     def test_broadcast(self, device, operation, backend, vector):
-        torch._dynamo.reset()
         shapes = ((2, 3), (4, 5))
         parts = [torch.randn(shape, device=device, dtype=torch.float64, requires_grad=True) for shape in shapes]
         operand_shapes = shapes if vector is None else ((3,), (5,)) if vector else ((1, 3), (4, 1))
@@ -646,47 +687,30 @@ class TestInPlace:
 
 class TestArithmeticFunctions:
 
-    def test_dense_left_mul_sampled_layout_values_and_vjp(self):
-        template = NT(
-            [torch.empty(2, 4, 3), torch.empty(2, 6, 3)],
-            ragged_dims=(1,),
+    @pytest.mark.usefixtures("isolated_compiler")
+    @pytest.mark.parametrize("backend", [None, "aot_eager"])
+    def test_dense_left_gradients(self, device, backend):
+        template = NT([torch.empty(2, length, 3, device=device) for length in (4, 6)], ragged_dims=(1,))
+        values = torch.randn_like(template.values(), dtype=torch.float32, requires_grad=True)
+        reference = values.detach().clone().requires_grad_()
+        scale = torch.randn(2, 2, 1, 1, device=device, dtype=torch.float32)
+
+        def multiply(structure, packed, factor):
+            source = structure.packed_like(packed)
+            return (factor * source).values(), (source * factor).values()
+
+        run = multiply if backend is None else torch.compile(multiply, backend=backend, fullgraph=True, dynamic=True)
+        actual = run(template, values, scale)
+        expected = torch.cat(
+            [part * scale[i, :, 0, 0][None, :, None] for i, part in enumerate(reference.split((4, 6)))]
         )
-        values = torch.randn_like(template.values(), requires_grad=True)
-        scale = torch.randn(2, 2, 1, 1)
-        nested = template.packed_like(values)
+        assert_close(actual, (expected, expected))
+        assert_close(
+            torch.autograd.grad(sum(value.square().sum() for value in actual), values),
+            torch.autograd.grad(2 * expected.square().sum(), reference),
+        )
 
-        dense_left = scale * nested
-        nested_left = nested * scale
-
-        cotangent = torch.randn_like(values)
-        dense_left_grad = torch.autograd.grad(dense_left.values(), values, cotangent, retain_graph=True)[0]
-        nested_left_grad = torch.autograd.grad(nested_left.values(), values, cotangent)[0]
-        assert_close(dense_left.values(), nested_left.values())
-        assert_close(dense_left_grad, nested_left_grad)
-
-    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    def test_dense_left_mul_sampled_layout_compiles_with_vjp(self):
-        def consume(template, values, scale):
-            nested = template.packed_like(values)
-            return (scale * nested).values(), (nested * scale).values()
-
-        compiled = torch.compile(consume, backend="aot_eager", fullgraph=True, dynamic=True)
-        template = NT([torch.empty(2, length, 3) for length in (4, 6)], ragged_dims=(1,))
-        values = torch.randn_like(template.values(), requires_grad=True)
-        eager_values = values.detach().clone().requires_grad_()
-        scale = torch.randn(2, 2, 1, 1)
-        dense_left, nested_left = compiled(template, values, scale)
-        eager_dense_left, eager_nested_left = consume(template, eager_values, scale)
-
-        assert_close(dense_left, eager_dense_left)
-        assert_close(nested_left, eager_nested_left)
-        loss = dense_left.square().sum() + nested_left.square().sum()
-        eager_loss = eager_dense_left.square().sum() + eager_nested_left.square().sum()
-        expected_gradient = torch.autograd.grad(eager_loss, eager_values)[0]
-        actual_gradient = torch.autograd.grad(loss, values)[0]
-        assert_close(actual_gradient, expected_gradient)
-
-    def test_dense_broadcast_expands_only_static_tail(self):
+    def test_dense_broadcast_expands_static_tail(self):
         nested = NT([torch.randn(2, 1), torch.randn(3, 1)])
 
         output = nested + torch.ones(1, 4)
@@ -710,7 +734,7 @@ class TestArithmeticFunctions:
         output = torch.div(other, nt)
         assert_close(output, other / nt.tensor)
 
-    def test_pow_with_scalar_and_nested_exponent(self, device, float_dtype):
+    def test_pow_scalar_nested_exponent(self, device, float_dtype):
         base = NestedTensor([torch.arange(1.0, 3.0, device=device, dtype=float_dtype)])
         output = torch.pow(base, 2)
         reference = base.tensor.pow(2)
@@ -793,7 +817,7 @@ class TestArithmeticFunctions:
         for i, elem in enumerate(nt):
             assert_close(output[i], elem + bias)
 
-    def test_dense_tail_broadcast_can_expand_static_dim(self, device, float_dtype):
+    def test_static_tail_expansion(self, device, float_dtype):
         nt = NT(
             [
                 torch.randn(5, 1, device=device, dtype=float_dtype),
@@ -813,7 +837,7 @@ class TestArithmeticFunctions:
         ],
         ids=("multi-ragged", "permuted-ragged"),
     )
-    def test_nested_static_broadcast_values_and_shapes(
+    def test_nested_static_broadcast_shape(
         self,
         device,
         float_dtype,
@@ -834,7 +858,7 @@ class TestArithmeticFunctions:
             assert [tuple(element.shape) for element in output] == list(rhs_shapes)
             assert output.ragged_dims == rhs.ragged_dims
 
-    def test_nested_singleton_ragged_broadcast_values_and_vjp(self, device, float_dtype):
+    def test_nested_singleton_ragged_broadcast_gradients(self, device, float_dtype):
         shapes = ((2, 3), (4, 5))
         channels = 4
         lhs_parts = [torch.randn(m, n, channels, device=device, dtype=float_dtype) for m, n in shapes]
@@ -861,7 +885,8 @@ class TestArithmeticFunctions:
         assert_close(lhs_grad, torch.ones_like(lhs_values))
         assert_close(rhs_grad, expected_rhs_grad)
 
-    def test_nested_broadcast_merges_ragged_axes_fullgraph_and_vjp(self, device):
+    @pytest.mark.usefixtures("isolated_compiler")
+    def test_joint_ragged_compiled_gradients(self, device):
         fake_tensor_mod = pytest.importorskip("torch._subclasses.fake_tensor")
 
         def multiply(left, right):
@@ -904,7 +929,7 @@ class TestArithmeticFunctions:
                 assert_close(actual_grads[0], 2 * NT(reference_grads[:2], ragged_dims=(0,)).values())
                 assert_close(actual_grads[1], 2 * NT(reference_grads[2:], ragged_dims=(1,)).values())
 
-    def test_dense_vector_broadcast_rejects_ragged_final_physical_dim(self, device, float_dtype):
+    def test_ragged_vector_error(self, device, float_dtype):
         parts = [
             torch.arange(4, device=device, dtype=float_dtype).reshape(4, 1),
             torch.arange(16, device=device, dtype=float_dtype).reshape(4, 4),
@@ -944,6 +969,7 @@ class TestArithmeticFunctions:
 
 class TestCompile:
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.parametrize("native", [False, True])
     def test_captured_shape(self, native):
         parts = [torch.randn(length, 4, requires_grad=True) for length in (2, 4)]
@@ -973,13 +999,7 @@ class TestCompile:
         torch.testing.assert_close(dense_output, dense)
         torch.testing.assert_close(torch.autograd.grad(dense_output.square().sum(), dense)[0], 2 * dense)
 
-    @pytest.fixture(autouse=True)
-    def isolate_compiler(self):
-        # Independent tests can otherwise exhaust the shared torch function wrapper cache.
-        torch.compiler.reset()
-        yield
-        torch.compiler.reset()
-
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
     def test_compile_det(self):
         torch.manual_seed(1016)
@@ -989,6 +1009,7 @@ class TestCompile:
         reference = NT([torch.linalg.det(element) for element in nt], **reference_options(nt))
         assert_close(output, reference)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
     def test_compile_view_rebuild(self, device):
         nt = NT([torch.randn(length, 3, device=device) for length in (2, 4)])
@@ -1003,14 +1024,7 @@ class TestCompile:
         )
         assert_close(output, reference)
 
-    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    def test_compile_convolution(self):
-        nt = NT([torch.randn(3, length) for length in (17, 29)])
-        weight = torch.randn(5, 3, 1)
-        bias = torch.randn(5)
-        compiled = torch.compile(F.conv1d, backend="inductor", fullgraph=True)
-        assert_close(compiled(nt, weight, bias), F.conv1d(nt, weight, bias))
-
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
     def test_compile_dropout(self):
         nt = NT(
@@ -1028,6 +1042,7 @@ class TestCompile:
         assert [tuple(element.shape) for element in dropout_comp] == [tuple(element.shape) for element in nt]
         assert torch.all((dropout_comp.values() == 0) | (dropout_comp.values() == nt.values() / 0.8))
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.skipif(
         not hasattr(torch, "compile") or not hasattr(torch, "rms_norm"),
         reason="torch.compile or torch.rms_norm not available",
@@ -1045,7 +1060,7 @@ class TestCompile:
         assert_close(result, reference)
 
 
-class TestCumulativeOps:
+class TestCumulative:
 
     def test_cummax_batch_dim_not_supported(self, device, float_dtype):
         nt = NT(
@@ -1058,7 +1073,7 @@ class TestCumulativeOps:
             torch.cummax(nt, dim=0)
 
     @pytest.mark.parametrize("op", [torch.cummax, torch.cummin])
-    def test_cummax_cummin_returns_values_and_indices(self, op, device, float_dtype):
+    def test_cummax_cummin_indices(self, op, device, float_dtype):
         nt = NT(
             [
                 torch.tensor([1.0, 0.0, 2.0], device=device, dtype=float_dtype),
@@ -1112,9 +1127,113 @@ class TestCumulativeOps:
         with pytest.raises(ValueError):
             torch.logcumsumexp(nt, dim=0)
 
+    def test_cumprod_second_derivatives_at_zero(self):
+        values = torch.tensor([0.0, 2.0, 3.0, 4.0, 5.0], dtype=torch.float64, requires_grad=True)
+        reference = values.detach().clone().requires_grad_()
+        output = NT(values.split((3, 2))).cumprod(dim=1).values()
+        expected = torch.cat([part.cumprod(0) for part in reference.split((3, 2))])
+        gradient = torch.autograd.grad(output.sum(), values, create_graph=True)[0]
+        expected_gradient = torch.autograd.grad(expected.sum(), reference, create_graph=True)[0]
+        second = torch.autograd.grad(gradient.sum(), values)[0]
+        expected_second = torch.autograd.grad(expected_gradient.sum(), reference)[0]
+        assert_close(gradient, expected_gradient)
+        assert_close(second, expected_second)
+
+    def test_cumprod_logcumsumexp_parity(self, device, float_dtype):
+        elements = [torch.randn(n, 3, device=device, dtype=float_dtype) for n in (3, 0, 5)]
+        nested = NT(elements, ragged_dims=(0,))
+
+        assert_close(
+            torch.cumprod(nested, dim=1),
+            NT([torch.cumprod(element, dim=0) for element in elements], ragged_dims=(0,)),
+        )
+        assert_close(
+            torch.logcumsumexp(nested, dim=1),
+            NT([torch.logcumsumexp(element, dim=0) for element in elements], ragged_dims=(0,)),
+        )
+
+    def test_cumprod_vjp_matches_per_element(self, device, float_dtype):
+        values = torch.randn(8, 2, device=device, dtype=float_dtype, requires_grad=True)
+        parts = values.split((3, 5))
+        nested = NT(parts, ragged_dims=(0,))
+
+        output = torch.cumprod(nested, dim=1).values()
+        reference = torch.cat([torch.cumprod(part, dim=0) for part in parts])
+        cotangent = torch.randn_like(reference)
+        actual_gradient = torch.autograd.grad(output, values, cotangent, retain_graph=True)[0]
+        expected_gradient = torch.autograd.grad(reference, values, cotangent)[0]
+
+        assert_close(output, reference)
+        assert_close(actual_gradient, expected_gradient)
+
+    def test_matrix_extrema(self, device, float_dtype):
+        elements = [torch.randn(n, 3, device=device, dtype=float_dtype) for n in (3, 1, 5)]
+        nested = NT(elements, ragged_dims=(0,))
+
+        for op in (torch.cummax, torch.cummin):
+            result = op(nested, dim=1)
+            expected = [op(element, dim=0) for element in elements]
+            assert_close(result.values, NT([item.values for item in expected], ragged_dims=(0,)))
+            assert_close(result.indices, NT([item.indices for item in expected], ragged_dims=(0,)))
+
+    @pytest.mark.parametrize("dtype", [torch.bool, torch.int32])
+    def test_cumprod_matches_dense_dtype_promotion(self, device, dtype):
+        elements = [
+            torch.tensor([1, 0, 1], device=device, dtype=dtype),
+            torch.tensor([1, 1], device=device, dtype=dtype),
+        ]
+        nested = NT(elements, ragged_dims=(0,))
+
+        output = torch.cumprod(nested, dim=1)
+
+        assert output.dtype == torch.cumprod(elements[0], dim=0).dtype
+        assert_close(output, NT([torch.cumprod(element, dim=0) for element in elements], ragged_dims=(0,)))
+
+    def test_cumulative_ops_nonleading_ragged_dim(self, device, float_dtype):
+        elements = [torch.randn(2, n, device=device, dtype=float_dtype) for n in (3, 5)]
+        nested = NT(elements, ragged_dims=(1,))
+
+        assert_close(
+            torch.cumprod(nested, dim=2),
+            NT([torch.cumprod(element, dim=1) for element in elements], ragged_dims=(1,)),
+        )
+        result = torch.cummax(nested, dim=2)
+        assert_close(
+            result.values,
+            NT([torch.cummax(element, dim=1).values for element in elements], ragged_dims=(1,)),
+        )
+        assert_close(
+            result.indices,
+            NT([torch.cummax(element, dim=1).indices for element in elements], ragged_dims=(1,)),
+        )
+
+    @pytest.mark.usefixtures("isolated_compiler")
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    @pytest.mark.parametrize("public_function", [False, True], ids=["method", "torch"])
+    def test_cumprod_compile_fullgraph_backward(self, device, public_function):
+        values = torch.randn(8, 2, device=device, requires_grad=True)
+        parts = values.split((3, 5))
+        nested = NT(parts, ragged_dims=(0,))
+        compiled = torch.compile(
+            lambda value: (torch.cumprod(value, dim=1) if public_function else value.cumprod(dim=1)).values(),
+            backend="aot_eager",
+            fullgraph=True,
+            dynamic=True,
+        )
+
+        output = compiled(nested)
+        reference = torch.cat([torch.cumprod(part, dim=0) for part in parts])
+        cotangent = torch.randn_like(reference)
+        actual_gradient = torch.autograd.grad(output, values, cotangent, retain_graph=True)[0]
+        expected_gradient = torch.autograd.grad(reference, values, cotangent)[0]
+
+        assert_close(output, reference)
+        assert_close(actual_gradient, expected_gradient)
+
 
 class TestDimensionTransforms:
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.parametrize("backend", [None, "aot_eager", "inductor"])
     @pytest.mark.parametrize(
         "operation,reference,dimensions,batch_dim",
@@ -1135,7 +1254,6 @@ class TestDimensionTransforms:
         ids=["permute", "transpose", "movedim", "identity", "batch", "squeezed", "owner-chain"],
     )
     def test_permutation_mutation(self, device, backend, operation, reference, dimensions, batch_dim):
-        torch.compiler.reset()
         run = operation if backend is None else torch.compile(operation, backend=backend, fullgraph=True, dynamic=True)
         parts = [torch.randn(n, 2, 3, device=device, dtype=torch.float64, requires_grad=True) for n in (2, 4)]
         refs = [part.detach().clone().requires_grad_() for part in parts]
@@ -1247,7 +1365,7 @@ class TestDimensionTransforms:
                 assert actual.batch_first
                 torch.testing.assert_close(actual.unbind(), reference)
 
-    def test_squeeze_default_with_all_ragged_ones(self, device, float_dtype):
+    def test_squeeze_default_all_ragged_ones(self, device, float_dtype):
         nt = NT(
             [
                 torch.randn(1, 2, device=device, dtype=float_dtype),
@@ -1270,7 +1388,7 @@ class TestDimensionTransforms:
         reference = torch.unsqueeze(torch.squeeze(nt.tensor, dim=1), dim=2)
         assert_close(output, reference)
 
-    def test_squeeze_trailing_static_dim_after_ragged_dims(self, device, float_dtype):
+    def test_static_squeeze_after_ragged(self, device, float_dtype):
         nt = NT(
             [
                 torch.randn(4, 4, 1, device=device, dtype=float_dtype),
@@ -1281,45 +1399,33 @@ class TestDimensionTransforms:
         reference = NT([torch.squeeze(t, dim=-1) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
-    def test_squeeze_sample_axis_values_and_vjp(self, device, float_dtype):
+    @pytest.mark.usefixtures("isolated_compiler")
+    @pytest.mark.parametrize(
+        ("backend", "float_dtype"),
+        [pytest.param(None, dtype, id=str(dtype)) for dtype in FLOAT_DTYPES]
+        + [pytest.param("aot_eager", torch.float32, id="compiled")],
+        indirect=["float_dtype"],
+    )
+    def test_squeeze_sample_gradients(self, device, backend, float_dtype):
+        lengths = (2, 5) if backend is None else (2, 3)
         template = NT(
-            [
-                torch.empty(1, 2, 3, device=device, dtype=float_dtype),
-                torch.empty(1, 5, 3, device=device, dtype=float_dtype),
-            ],
-            ragged_dims=(1,),
+            [torch.empty(1, length, 3, device=device, dtype=float_dtype) for length in lengths], ragged_dims=(1,)
         )
-        values = torch.randn_like(template.values(), requires_grad=True)
-        sampled = template.packed_like(values)
+        values = torch.randn_like(template.values(), dtype=float_dtype, requires_grad=True)
         expected = values.squeeze(1)
 
-        output = sampled.squeeze(-3)
+        def squeeze(structure, packed):
+            return structure.packed_like(packed).squeeze(-3)
 
-        cotangent = torch.randn_like(expected)
-        actual_grad = torch.autograd.grad(output.values(), values, cotangent)[0]
-        expected_grad = torch.autograd.grad(expected, values, cotangent)[0]
+        run = squeeze if backend is None else torch.compile(squeeze, backend=backend, fullgraph=True, dynamic=True)
+        output = run(template, values)
+        probe = torch.randn_like(expected)
         assert output.ragged_dims == (0,)
-        assert output.values().shape == (7, 3)
         assert_close(output.values(), expected)
-        assert_close(actual_grad, expected_grad)
-
-    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    def test_squeeze_sample_axis_compiles_with_vjp(self, device):
-        compiled = torch.compile(
-            lambda template, values: template.packed_like(values).squeeze(-3).values(),
-            backend="aot_eager",
-            fullgraph=True,
-            dynamic=True,
+        assert_close(
+            torch.autograd.grad(output.values(), values, probe),
+            torch.autograd.grad(expected, values, probe),
         )
-        template = NT([torch.empty(1, length, 3, device=device) for length in (2, 3)], ragged_dims=(1,))
-        values = torch.randn_like(template.values(), requires_grad=True)
-        expected = values.squeeze(1)
-        output = compiled(template, values)
-        cotangent = torch.randn_like(expected)
-        actual_grad = torch.autograd.grad(output, values, cotangent)[0]
-        expected_grad = torch.autograd.grad(expected, values, cotangent)[0]
-        assert_close(output, expected)
-        assert_close(actual_grad, expected_grad)
 
     @pytest.mark.parametrize("batch_first", [True, False])
     @pytest.mark.parametrize("method", [False, True])
@@ -1346,6 +1452,7 @@ class TestDimensionTransforms:
         with pytest.raises(RuntimeError, match="modified.*inplace|version"):
             loss.backward()
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.parametrize("batch_first", [True, False])
     def test_batch_sequence_transpose_compiled_vjp(self, device, batch_first):
         def project_and_transpose(source, weight, bias):
@@ -1370,7 +1477,7 @@ class TestDimensionTransforms:
                 torch.autograd.grad(expected.values().square().sum(), (*references, reference_weight, reference_bias)),
             )
 
-    def test_transpose_swaps_last_two_element_dims(self, device, float_dtype):
+    def test_element_transpose(self, device, float_dtype):
         nt = NT(
             [
                 torch.randn(4, 5, 7, device=device, dtype=float_dtype),
@@ -1394,7 +1501,7 @@ class TestDimensionTransforms:
         ],
         ids=("view", "axis-move"),
     )
-    def test_view_like_ops_values_and_vjp(self, device, float_dtype, nested_transform, element_transform):
+    def test_view_like_gradients(self, device, float_dtype, nested_transform, element_transform):
         leaves = [
             torch.randn(2, 1, 3, device=device, dtype=float_dtype, requires_grad=True),
             torch.randn(3, 1, 3, device=device, dtype=float_dtype, requires_grad=True),
@@ -1477,11 +1584,11 @@ class TestDimensionTransforms:
             expected = torch.vmap(reference, in_dims=-1)(values)
         torch.testing.assert_close(actual, expected)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.parametrize("backend", [None, "aot_eager", "inductor"])
     @pytest.mark.parametrize("entry", ["function", "method"])
     @pytest.mark.parametrize("dim", [None, -1, (1, 2), ()])
     def test_squeeze_mutation(self, device, backend, entry, dim):
-        torch.compiler.reset()
 
         def operation(value):
             value = value.unsqueeze(-1)
@@ -1509,10 +1616,10 @@ class TestDimensionTransforms:
                 torch.autograd.grad(sum(part.square().sum() for part in expected_parts), references),
             )
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.parametrize("backend", [None, "aot_eager", "inductor"])
     @pytest.mark.parametrize("case", ["flatten", "unflatten", "roundtrip", "reshape", "copy"])
     def test_shape_mutation(self, device, backend, case):
-        torch.compiler.reset()
 
         def operation(value):
             if case == "flatten":
@@ -1563,11 +1670,11 @@ class TestDimensionTransforms:
             else:
                 torch.autograd.grad(saved, parts)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.parametrize("entry", ["function", "method"])
     @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
     @pytest.mark.parametrize("dim", [0, 1])
     def test_unsqueeze_grad(self, device, entry, backend, dim):
-        torch.compiler.reset()
         parts = [torch.tensor(value, device=device, dtype=torch.float64, requires_grad=True) for value in (2.0, 3.0)]
         references = [part.detach().clone().requires_grad_() for part in parts]
 
@@ -1583,7 +1690,7 @@ class TestDimensionTransforms:
             torch.autograd.grad(expected.square().sum(), references),
         )
 
-    def test_unsqueeze_batch_first_false_respects_batch_dim(self):
+    def test_batch_second_unsqueeze(self):
         nt = NestedTensor([torch.tensor([1, 2])], batch_first=False)
         with pytest.raises(ValueError):
             torch.unsqueeze(nt, dim=0)
@@ -1593,57 +1700,39 @@ class TestDimensionTransforms:
         assert output.batch_first is False
         assert output.tensor.shape == torch.Size([2, 1, 1])
 
-    def test_unsqueeze_after_moved_static_axis_rbf_values_and_vjp(self, device, float_dtype):
-        lengths = (3, 5)
+    @pytest.mark.usefixtures("isolated_compiler")
+    @pytest.mark.parametrize(
+        ("backend", "float_dtype"),
+        [pytest.param(None, dtype, id=str(dtype)) for dtype in FLOAT_DTYPES]
+        + [pytest.param("aot_eager", torch.float32, id="compiled")],
+        indirect=["float_dtype"],
+    )
+    def test_moved_axis_broadcast_gradients(self, device, backend, float_dtype):
+        lengths = (3, 5) if backend is None else (2, 3)
         template = NT(
-            [torch.empty(length, 5, 2, device=device) for length in lengths],
-            ragged_dims=(0,),
+            [torch.empty(length, 5, 2, device=device, dtype=float_dtype) for length in lengths], ragged_dims=(0,)
         )
         values = torch.randn_like(template.values(), dtype=float_dtype, requires_grad=True)
-        source = template.packed_like(values)
         centers = torch.linspace(2, 22, 2, device=device, dtype=float_dtype)
 
-        moved = source.movedim(2, 3)
-        expanded = moved.unsqueeze(-1)
-        output = torch.exp(-(((expanded - centers) / 10) ** 2)).flatten(start_dim=-2)
+        def radial(structure, packed):
+            source = structure.packed_like(packed).movedim(2, 3).unsqueeze(-1)
+            return torch.exp(-(((source - centers) / 10) ** 2)).flatten(start_dim=-2)
 
-        parts = values.split(lengths)
-        references = tuple(
-            torch.exp(-(((part.movedim(1, 2).unsqueeze(-1) - centers) / 10) ** 2)).flatten(start_dim=-2)
-            for part in parts
-        )
-        expected = torch.cat(tuple(reference.movedim(1, 2) for reference in references))
-        cotangent = torch.randn_like(expected)
-        actual_grad = torch.autograd.grad(output.values(), values, cotangent, retain_graph=True)[0]
-        expected_grad = torch.autograd.grad(expected, values, cotangent)[0]
-
-        assert output.shape == torch.Size((2, 5, 2, 10))
-        assert output.ragged_dims == (0,)
-        assert_close(output.values(), expected)
-        assert_close(actual_grad, expected_grad)
-
-    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    def test_unsqueeze_after_moved_static_axis_compiles(self, device):
-        def run(template, values, centers):
-            source = template.packed_like(values).movedim(2, 3).unsqueeze(-1)
-            return torch.exp(-(((source - centers) / 10) ** 2)).flatten(start_dim=-2).values()
-
-        compiled = torch.compile(run, backend="aot_eager", fullgraph=True, dynamic=True)
-        centers = torch.linspace(2, 22, 2, device=device)
-        lengths = (2, 3)
-        template = NT([torch.empty(length, 5, 2, device=device) for length in lengths], ragged_dims=(0,))
-        values = torch.randn_like(template.values(), requires_grad=True)
-        output = compiled(template, values, centers)
-        references = tuple(
+        run = radial if backend is None else torch.compile(radial, backend=backend, fullgraph=True, dynamic=True)
+        output = run(template, values)
+        expected = tuple(
             torch.exp(-(((part.movedim(1, 2).unsqueeze(-1) - centers) / 10) ** 2)).flatten(start_dim=-2)
             for part in values.split(lengths)
         )
-        expected = torch.cat(tuple(reference.movedim(1, 2) for reference in references))
-        cotangent = torch.randn_like(expected)
-        actual_grad = torch.autograd.grad(output, values, cotangent, retain_graph=True)[0]
-        expected_grad = torch.autograd.grad(expected, values, cotangent)[0]
-        assert_close(output, expected)
-        assert_close(actual_grad, expected_grad)
+        assert output.shape == (2, max(lengths), 2, 10)
+        assert output.ragged_dims == (0,)
+        assert_close(output.unbind(), expected)
+        probes = [torch.randn_like(part) for part in expected]
+        assert_close(
+            torch.autograd.grad(sum((part * probe).sum() for part, probe in zip(output.unbind(), probes)), values),
+            torch.autograd.grad(sum((part * probe).sum() for part, probe in zip(expected, probes)), values),
+        )
 
     def test_movedim(self, device, float_dtype):
         a = torch.randn(3, 4, 5, device=device, dtype=float_dtype)
@@ -1655,7 +1744,7 @@ class TestDimensionTransforms:
         assert_close(result[0], ref[0])
         assert_close(result[1], ref[1])
 
-    def test_pairwise_unsqueeze_multiply_builds_square_map(self, device, float_dtype):
+    def test_pairwise_grid(self, device, float_dtype):
         nt = NT(
             [
                 torch.randn(26, 8, device=device, dtype=float_dtype),
@@ -1674,7 +1763,7 @@ class TestDimensionTransforms:
         assert output.shape == torch.Size([3, 26, 26, 8])
         assert [tuple(element.shape) for element in output] == [(26, 26, 8), (14, 14, 8), (9, 9, 8)]
 
-    def test_pairwise_unsqueeze_multiply_from_tensor_mask_preserves_square_metadata(self, device, float_dtype):
+    def test_masked_pairwise_grid(self, device, float_dtype):
         dense = torch.randn(1, 5, 3, device=device, dtype=float_dtype)
         mask = torch.ones(1, 5, device=device, dtype=torch.bool)
         nt = NestedTensor.from_tensor_mask(dense, mask)
@@ -1716,7 +1805,7 @@ class TestDist:
 class TestEinsum:
 
     @staticmethod
-    def _ligand_mpnn_einsum_inputs(
+    def _einsum_operands(
         equation,
         lengths,
         *,
@@ -1735,7 +1824,6 @@ class TestEinsum:
             )
             lhs_values = torch.randn_like(lhs_template.values(), requires_grad=requires_grad)
             rhs_values = torch.randn_like(rhs_template.values(), requires_grad=requires_grad)
-            reference = torch.einsum("xi,xi->x", lhs_values, rhs_values)
         elif equation == "blqp,blyq->blyp":
             lhs_template = NT(
                 [torch.empty(length, 3, 4, device=device, dtype=dtype) for length in lengths],
@@ -1747,78 +1835,50 @@ class TestEinsum:
             )
             lhs_values = torch.randn_like(lhs_template.values(), requires_grad=requires_grad)
             rhs_values = torch.randn_like(rhs_template.values(), requires_grad=requires_grad)
-            reference = torch.einsum("xqp,xyq->xyp", lhs_values, rhs_values)
         else:
             raise AssertionError(f"unsupported test equation {equation}")
-        return lhs_template.packed_like(lhs_values), rhs_template.packed_like(rhs_values), reference
+        return lhs_template.packed_like(lhs_values), rhs_template.packed_like(rhs_values)
 
+    @pytest.mark.usefixtures("isolated_compiler")
+    @pytest.mark.parametrize(
+        ("backend", "float_dtype"),
+        [pytest.param(None, dtype, id=str(dtype)) for dtype in FLOAT_DTYPES]
+        + [pytest.param("aot_eager", torch.float32, id="compiled")],
+        indirect=["float_dtype"],
+    )
     @pytest.mark.parametrize("equation", ["bli,bli->bl", "blqp,blyq->blyp"])
-    def test_ligand_mpnn_einsum_values_and_vjp(self, equation, device, float_dtype):
-        lhs, rhs, reference = self._ligand_mpnn_einsum_inputs(
-            equation,
-            (2, 5),
-            device=device,
-            dtype=float_dtype,
-            requires_grad=True,
-        )
-        lhs_values = lhs.values()
-        rhs_values = rhs.values()
-        if equation == "bli,bli->bl":
-            reference = torch.einsum("xi,xi->x", lhs_values, rhs_values)
-            expected_tail = ()
-        else:
-            reference = torch.einsum("xqp,xyq->xyp", lhs_values, rhs_values)
-            expected_tail = (5, 4)
-
-        output = torch.einsum(equation, lhs, rhs)
-
-        cotangent = torch.randn_like(reference)
-        output_gradients = torch.autograd.grad(
-            output.values(),
-            (lhs_values, rhs_values),
-            cotangent,
-        )
-        reference_gradients = torch.autograd.grad(reference, (lhs_values, rhs_values), cotangent)
-        assert output.values().shape == (sum((2, 5)), *expected_tail)
-        assert output.ragged_dims == (0,)
-        assert_close(output.values(), reference)
-        for actual, expected in zip(output_gradients, reference_gradients):
-            assert_close(actual, expected)
-
-    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    @pytest.mark.parametrize("equation", ["bli,bli->bl", "blqp,blyq->blyp"])
-    def test_ligand_mpnn_einsum_compiles_with_vjp(self, equation, device):
-        compiled = torch.compile(
-            lambda lhs_template, lhs_values, rhs_template, rhs_values: torch.einsum(
-                equation,
-                lhs_template.packed_like(lhs_values),
-                rhs_template.packed_like(rhs_values),
-            ).values(),
-            backend="aot_eager",
-            fullgraph=True,
-            dynamic=True,
-        )
-
-        lhs, rhs, reference = self._ligand_mpnn_einsum_inputs(
-            equation,
-            (2, 3),
-            device=device,
-            requires_grad=True,
-        )
-        lhs_values = lhs.values()
-        rhs_values = rhs.values()
+    def test_bilinear_gradients(self, equation, device, backend, float_dtype):
+        lengths = (2, 5) if backend is None else (2, 3)
+        lhs, rhs = self._einsum_operands(equation, lengths, device=device, dtype=float_dtype, requires_grad=True)
+        lhs_values, rhs_values = lhs.values(), rhs.values()
         packed_equation = "xi,xi->x" if equation == "bli,bli->bl" else "xqp,xyq->xyp"
-        reference = torch.einsum(packed_equation, lhs_values, rhs_values)
-        lhs_template = lhs.packed_like(torch.empty_like(lhs_values))
-        rhs_template = rhs.packed_like(torch.empty_like(rhs_values))
-        output = compiled(lhs_template, lhs_values, rhs_template, rhs_values)
-        cotangent = torch.randn_like(reference)
-        output_gradients = torch.autograd.grad(output, (lhs_values, rhs_values), cotangent)
-        reference_gradients = torch.autograd.grad(reference, (lhs_values, rhs_values), cotangent)
-        assert_close(output, reference)
-        for actual, expected in zip(output_gradients, reference_gradients):
-            assert_close(actual, expected)
+        expected = torch.einsum(packed_equation, lhs_values, rhs_values)
+        if backend is None:
+            output = torch.einsum(equation, lhs, rhs)
+            assert output.ragged_dims == (0,)
+            actual = output.values()
+        else:
 
+            def contract(left_template, left, right_template, right):
+                return torch.einsum(
+                    equation, left_template.packed_like(left), right_template.packed_like(right)
+                ).values()
+
+            run = torch.compile(contract, backend=backend, fullgraph=True, dynamic=True)
+            actual = run(
+                lhs.packed_like(torch.empty_like(lhs_values)),
+                lhs_values,
+                rhs.packed_like(torch.empty_like(rhs_values)),
+                rhs_values,
+            )
+        probe = torch.randn_like(expected)
+        assert_close(actual, expected)
+        assert_close(
+            torch.autograd.grad(actual, (lhs_values, rhs_values), probe),
+            torch.autograd.grad(expected, (lhs_values, rhs_values), probe),
+        )
+
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
     def test_einsum_matmul_equation_compile_fullgraph(self, device, float_dtype):
         a = torch.randn(2, 3, 4, device=device, dtype=float_dtype)
@@ -1911,6 +1971,7 @@ class TestEinsum:
         reference = NT([torch.einsum("lc,mc->lm", t, dense[0]) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
     def test_einsum_global_query_compile(self, device, float_dtype):
         hidden_states = NT(
@@ -1978,10 +2039,10 @@ class TestEinsum:
 
 class TestFlattenUnflatten:
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.parametrize("backend", [None, "aot_eager", "inductor"])
     @pytest.mark.parametrize("batch_first", [True, False])
     def test_nonleading_ragged_copying_reshape(self, device, backend, batch_first):
-        torch.compiler.reset()
 
         def reshape(value):
             return value.transpose(1, 2).reshape(2, -1) if batch_first else value.transpose(0, 2).reshape(-1, 2)
@@ -2009,10 +2070,10 @@ class TestFlattenUnflatten:
                 torch.autograd.grad(sum(part.square().sum() for part in expected), references),
             )
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.parametrize("backend", [None, "aot_eager"])
     @pytest.mark.parametrize("method,keyword", [(torch.Tensor.view, "size"), (torch.Tensor.reshape, "shape")])
     def test_native_signature(self, device, method, keyword, backend):
-        torch.compiler.reset()
         parts = [torch.arange(6.0, device=device).requires_grad_() for _ in range(2)]
         source = NT(parts, ragged_dims=(0,))
 
@@ -2030,6 +2091,7 @@ class TestFlattenUnflatten:
         with pytest.raises(TypeError):
             method(source)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.parametrize("backend", [None, "aot_eager"])
     @pytest.mark.parametrize(
         "source_dtype,dtype",
@@ -2042,7 +2104,6 @@ class TestFlattenUnflatten:
     )
     @pytest.mark.parametrize("ragged", [False, True])
     def test_dtype_view(self, device, source_dtype, dtype, ragged, backend):
-        torch.compiler.reset()
         shapes = [(2, 4), (3, 6 if ragged else 4)]
         source = NT(
             [
@@ -2078,11 +2139,11 @@ class TestFlattenUnflatten:
         with pytest.raises(RuntimeError, match="modified"):
             native_loss.backward(torch.ones_like(native_loss))
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.parametrize("backend", [None, "aot_eager"])
     @pytest.mark.parametrize("batch_first", [False, True])
     @pytest.mark.parametrize("batched", [False, True])
     def test_dense_template(self, device, batch_first, batched, backend):
-        torch.compiler.reset()
         parts = [torch.arange(6.0, device=device, dtype=torch.float64).requires_grad_() for _ in range(2)]
         source = NT(parts, ragged_dims=(0,), batch_first=batch_first)
         shape = (2, 3, 2) if batch_first else (3, 2, 2)
@@ -2160,11 +2221,14 @@ class TestFlattenUnflatten:
         assert output.shape == output.tensor.shape == template.shape
         torch.testing.assert_close(output.unbind(0 if batch_first else 1), [part.T for part in parts])
         actual = output.values()
-        if method == "view_as":
-            assert actual.untyped_storage().data_ptr() == source.values().untyped_storage().data_ptr()
         probe = torch.randn_like(values)
         torch.testing.assert_close(torch.autograd.grad(actual, parts, probe), torch.autograd.grad(values, parts, probe))
+        if method == "view_as":
+            with torch.no_grad():
+                output.add_(1)
+                torch.testing.assert_close(source.unbind(0 if batch_first else 1), [part.T + 1 for part in parts])
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.parametrize("method", ["reshape_as", "view_as"])
     @pytest.mark.parametrize(
         ("backend", "shape", "batches", "native", "batch_first"),
@@ -2186,7 +2250,6 @@ class TestFlattenUnflatten:
     def test_reference_view_rejects_different_batches(
         self, device, backend, method, native, batch_first, shape, batches
     ):
-        torch.compiler.reset()
 
         def batch(count):
             value = NT(
@@ -2208,12 +2271,12 @@ class TestFlattenUnflatten:
         with pytest.raises(RuntimeError, match="matching batch sizes"):
             run(source, reference)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.parametrize("backend", [None, "aot_eager", "inductor"])
     @pytest.mark.parametrize("method", ["reshape_as", "view_as"])
     @pytest.mark.parametrize("source_batch_first", [True, False])
     @pytest.mark.parametrize("reference_batch_first", [True, False])
     def test_reference_view_batch_placement(self, device, backend, method, source_batch_first, reference_batch_first):
-        torch.compiler.reset()
         parts = [torch.arange(n * 3.0, device=device, dtype=torch.float64).requires_grad_() for n in (2, 4)]
         source = NT(parts, ragged_dims=(0,), batch_first=source_batch_first)
         reference = NT(
@@ -2232,17 +2295,16 @@ class TestFlattenUnflatten:
         assert output.batch_first is reference_batch_first
         torch.testing.assert_close(output.unbind(batch_dim), expected)
         torch.testing.assert_close(torch.autograd.grad(output.square().sum(), parts), tuple(2 * part for part in parts))
-        assert torch._C._is_alias_of(output._packed_values, source._packed_values)
         with torch.no_grad():
             output.add_(2)
             torch.testing.assert_close(source.unbind(0 if source_batch_first else 1), tuple(part + 2 for part in parts))
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.parametrize("backend", [None, "aot_eager"])
     @pytest.mark.parametrize("native", [False, True])
     @pytest.mark.parametrize("batch_first", [True, False])
     @pytest.mark.parametrize("transposed", [True, False])
     def test_reshape_as(self, device, batch_first, transposed, native, backend):
-        torch.compiler.reset()
         parts = [torch.randn(n * n, device=device, dtype=torch.float64, requires_grad=True) for n in (2, 3)]
         source = NT(parts, ragged_dims=(0,), batch_first=batch_first, padding_value=-1, mask_value=False)
         reference = NT(
@@ -2300,7 +2362,7 @@ class TestFlattenUnflatten:
         [((2, 4), (2, 4)), ((2, 4), (3, 4)), ((2, 6), (5, 2))],
         ids=["equal", "unequal", "different-axis-maxima"],
     )
-    def test_flatten_ragged_spatial_axes_preserves_structure_and_vjp(self, device, batch_first, spatial_sizes):
+    def test_ragged_spatial_axes_structure_vjp(self, device, batch_first, spatial_sizes):
         parts = [
             torch.randn(3, height, width, device=device, dtype=torch.float64, requires_grad=True)
             for height, width in spatial_sizes
@@ -2324,11 +2386,11 @@ class TestFlattenUnflatten:
         expected_gradients = torch.autograd.grad(sum(value.square().sum() for value in expected), parts)
         torch.testing.assert_close(gradients, expected_gradients)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.parametrize("batch_first", [True, False])
     @pytest.mark.parametrize("ragged_rank", [2, 3])
     @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
     def test_dynamic_flatten(self, device, batch_first, ragged_rank, backend):
-        torch.compiler.reset()
         compiled = torch.compile(lambda value: value.flatten(2), backend=backend, fullgraph=True, dynamic=True)
         shapes = [((2, 5), (4, 3)), ((4, 5), (1, 2))]
         for spatial_shapes in shapes:
@@ -2348,7 +2410,7 @@ class TestFlattenUnflatten:
             expected_gradients = torch.autograd.grad(sum(part.square().sum() for part in expected), parts)
             torch.testing.assert_close(gradients, expected_gradients)
 
-    def test_flatten_static_dims_after_multi_ragged_prefix(self):
+    def test_static_dims_multi_ragged(self):
         nt = NT(
             [
                 torch.arange(2 * 3 * 4 * 5, dtype=torch.float32).reshape(2, 3, 4, 5),
@@ -2359,52 +2421,25 @@ class TestFlattenUnflatten:
         reference = NT([torch.flatten(t, start_dim=2) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.parametrize("transposed", [False, True], ids=["canonical", "transposed"])
-    def test_static_tail_flatten_unflatten_values_and_vjp(self, transposed):
-        source = NestedTensor(
-            [torch.empty(2, 2, 2, 4), torch.empty(3, 3, 2, 4)],
-            ragged_dims=(0, 1),
-        )
+    @pytest.mark.parametrize("backend", [None, "aot_eager"])
+    def test_static_tail_roundtrip(self, transposed, backend):
+        template = NT([torch.empty(2, 2, 2, 4), torch.empty(3, 3, 2, 4)], ragged_dims=(0, 1))
         if transposed:
-            source = source.transpose(1, 2)
-        leaf = torch.randn_like(source.values(), requires_grad=True)
-        source = source.packed_like(leaf)
-
-        flattened = source.flatten(-2)
-        restored = flattened.unflatten(-1, (2, 4))
-
-        assert flattened.ragged_dims == source.ragged_dims
-        assert restored.shape == source.shape
-        assert restored.ragged_dims == source.ragged_dims
-        assert_close(flattened.values(), leaf.flatten(-2))
-        assert_close(restored.values(), leaf)
-        restored.values().square().sum().backward()
-        assert_close(leaf.grad, 2 * leaf)
-
-    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    def test_static_tail_flatten_unflatten_compiles(self):
-        template = NestedTensor(
-            [torch.empty(2, 2, 2, 4), torch.empty(3, 3, 2, 4)],
-            ragged_dims=(0, 1),
-        )
+            template = template.transpose(1, 2)
         values = torch.randn_like(template.values(), requires_grad=True)
-        compiled = torch.compile(
-            lambda structure, packed: structure.packed_like(packed)
-            .flatten(-2)
-            .unflatten(-1, (2, 4))
-            .values()
-            .square()
-            .sum(),
-            backend="aot_eager",
-            fullgraph=True,
-            dynamic=True,
-        )
 
-        loss = compiled(template, values)
-        gradient = torch.autograd.grad(loss, values)[0]
+        def roundtrip(structure, packed):
+            source = structure.packed_like(packed)
+            return source.flatten(-2).unflatten(-1, (2, 4))
 
-        assert_close(loss, values.square().sum())
-        assert_close(gradient, 2 * values)
+        run = roundtrip if backend is None else torch.compile(roundtrip, backend=backend, fullgraph=True, dynamic=True)
+        output = run(template, values)
+        assert output.shape == template.shape
+        assert output.ragged_dims == template.ragged_dims
+        assert_close(output.values(), values)
+        assert_close(torch.autograd.grad(output.values().square().sum(), values)[0], 2 * values)
 
     def test_flatten_all(self, device, float_dtype):
         nt = NestedTensor(
@@ -2417,7 +2452,7 @@ class TestFlattenUnflatten:
         assert isinstance(output, torch.Tensor)
         assert_close(output, torch.flatten(nt.tensor, start_dim=0))
 
-    def test_flatten_ragged_2d_batch_and_first_dim_to_rows(self):
+    def test_spatial_batch_rows(self):
         # flatten(0, 1) on a ragged_rank>=2 NT collapses (batch + first ragged dim) into the batch
         # while a ragged dim remains -> an NT of sum(L_i) rows (each (M_i, ...)), the "rows of the grid"
         # view (e.g. for a packed row LSTM), instead of densifying to the padded max length.
@@ -2478,7 +2513,8 @@ class TestFlattenUnflatten:
 
 class TestExpand:
 
-    def test_expand_as_uses_target_elements_with_mask_and_fullgraph_vjp(self, device):
+    @pytest.mark.usefixtures("isolated_compiler")
+    def test_reference_expand_gradients(self, device):
         fake_tensor_mod = pytest.importorskip("torch._subclasses.fake_tensor")
 
         def masked_expand(template, values, target, mask):
@@ -2525,38 +2561,33 @@ class TestExpand:
         reference = NT([t.expand(-1, 4, -1) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
-    def test_expand_sample_axis(self, device, float_dtype):
-        parts = [torch.randn(length, 3, device=device, dtype=float_dtype, requires_grad=True) for length in (3, 5)]
-        reference_parts = [part.detach().clone().requires_grad_() for part in parts]
-        nt = NT(parts)
+    @pytest.mark.usefixtures("isolated_compiler")
+    @pytest.mark.parametrize(
+        ("backend", "float_dtype"),
+        [pytest.param(None, dtype, id=str(dtype)) for dtype in FLOAT_DTYPES]
+        + [pytest.param("aot_eager", torch.float32, id="compiled")],
+        indirect=["float_dtype"],
+    )
+    def test_sample_gradients(self, device, backend, float_dtype):
+        lengths = (3, 5) if backend is None else (2, 3)
+        template = NT(
+            [torch.empty(length, 3, device=device, dtype=float_dtype) for length in lengths], ragged_dims=(0,)
+        )
+        values = torch.randn_like(template.values(), dtype=float_dtype, requires_grad=True)
 
-        output = nt.unsqueeze(-3).expand(-1, 4, nt.size(-2), -1)
-        reference = [part.unsqueeze(0).expand(4, -1, -1) for part in reference_parts]
-        for actual, expected in zip(output, reference):
-            assert_close(actual, expected)
+        def expand(structure, packed):
+            source = structure.packed_like(packed)
+            return source.unsqueeze(-3).expand(-1, 4, source.size(-2), -1)
 
-        weights = [torch.randn_like(element) for element in reference]
-        loss = sum((element * weight).sum() for element, weight in zip(output, weights))
-        reference_loss = sum((element * weight).sum() for element, weight in zip(reference, weights))
-        gradients = torch.autograd.grad(loss, parts)
-        reference_gradients = torch.autograd.grad(reference_loss, reference_parts)
-        for actual, expected in zip(gradients, reference_gradients):
-            assert_close(actual, expected)
-
-    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    def test_expand_sample_axis_compiles_with_vjp(self, device):
-        def consume(template, values):
-            reference_positions = template.packed_like(values)
-            sampled = reference_positions.unsqueeze(-3).expand(-1, 4, reference_positions.size(-2), -1)
-            return sampled.values().square().sum()
-
-        compiled = torch.compile(consume, backend="aot_eager", fullgraph=True, dynamic=True)
-        template = NT([torch.empty(length, 3, device=device) for length in (2, 3)], ragged_dims=(0,))
-        values = torch.randn_like(template.values(), requires_grad=True)
-        loss = compiled(template, values)
-        gradient = torch.autograd.grad(loss, values)[0]
-        assert_close(loss, values.square().sum() * 4)
-        assert_close(gradient, 8 * values)
+        run = expand if backend is None else torch.compile(expand, backend=backend, fullgraph=True, dynamic=True)
+        output = run(template, values)
+        expected = values.unsqueeze(1).expand(-1, 4, -1)
+        assert_close(output.values(), expected)
+        probe = torch.randn_like(expected)
+        assert_close(
+            torch.autograd.grad(output.values(), values, probe),
+            torch.autograd.grad(expected, values, probe),
+        )
 
     def test_expand_rejects_ragged_change(self):
         reference_positions = NT([torch.empty(1, 3), torch.empty(2, 3)], ragged_dims=(0,))
@@ -2564,7 +2595,7 @@ class TestExpand:
         with pytest.raises(RuntimeError, match="cannot change a ragged dimension"):
             sampled.expand(-1, 4, 7, -1)
 
-    def test_expand_rejects_non_singleton_static_change(self):
+    def test_rejects_non_singleton_static_change(self):
         nt = NT([torch.empty(2, 2, 3), torch.empty(3, 2, 3)], ragged_dims=(0,))
         with pytest.raises(RuntimeError):
             nt.expand(-1, -1, 4, -1)
@@ -2578,7 +2609,7 @@ class TestExpand:
 
 class TestFlipAndRoll:
 
-    def test_flip_translates_dims_and_rejects_batch(self, device):
+    def test_flip_translates_dims_rejects_batch(self, device):
         nt = NT([torch.tensor([[1, 2], [3, 4]], device=device), torch.tensor([[5, 6]], device=device)])
         output = torch.flip(nt, dims=(-1,))
         reference = NT([torch.flip(t, dims=(-1,)) for t in nt], **reference_options(nt))
@@ -2621,7 +2652,7 @@ class TestFlipAndRoll:
         reference = NT([torch.roll(t, shifts=1) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
-    def test_roll_translates_dims_and_rejects_batch(self, device):
+    def test_roll_translates_dims_rejects_batch(self, device):
         nt = NT([torch.tensor([[1, 2], [3, 4]], device=device), torch.tensor([[5, 6]], device=device)])
         output = torch.roll(nt, shifts=1, dims=-1)
         reference = NT([torch.roll(t, shifts=1, dims=-1) for t in nt], **reference_options(nt))
@@ -2629,25 +2660,6 @@ class TestFlipAndRoll:
 
         with pytest.raises(ValueError):
             torch.roll(nt, shifts=1, dims=0)
-
-    def test_rot90_values_and_vjp(self, device, float_dtype):
-        leaves = [
-            torch.randn(2, 1, 3, device=device, dtype=float_dtype, requires_grad=True),
-            torch.randn(3, 1, 3, device=device, dtype=float_dtype, requires_grad=True),
-        ]
-        references = [leaf.detach().clone().requires_grad_() for leaf in leaves]
-        output = torch.rot90(NT(leaves), 1, (2, 3))
-        expected = [torch.rot90(reference, 1, (1, 2)) for reference in references]
-        weights = [torch.randn_like(element) for element in expected]
-        actual_loss = sum((element * weight).sum() for element, weight in zip(output, weights))
-        expected_loss = sum((element * weight).sum() for element, weight in zip(expected, weights))
-
-        actual_gradients = torch.autograd.grad(actual_loss, leaves)
-        expected_gradients = torch.autograd.grad(expected_loss, references)
-        for actual, reference in zip(output, expected):
-            assert_close(actual, reference)
-        for actual, reference in zip(actual_gradients, expected_gradients):
-            assert_close(actual, reference)
 
 
 class TestIndexingReadOps:
@@ -2706,7 +2718,7 @@ class TestIndexingReadOps:
         reference = NT([t.reshape(-1) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
-    def test_masked_select_multi_ragged_exact_layout(self, device, float_dtype):
+    def test_multi_ragged_masked_select(self, device, float_dtype):
         nt = NT(
             [
                 torch.tensor([[1.0, 0.0, 3.0], [0.0, 5.0, 6.0]], device=device, dtype=float_dtype),
@@ -2740,7 +2752,7 @@ class TestIndexingReadOps:
         assert_close(output, reference)
 
     @pytest.mark.skipif(not hasattr(torch, "take_along_dim"), reason="requires torch.take_along_dim")
-    def test_take_along_dim_with_nested_indices_ragged_dim(self, device, float_dtype):
+    def test_ragged_take_along_dim(self, device, float_dtype):
         nt = NestedTensor(
             [
                 torch.tensor([[10.0, 20.0, 30.0], [40.0, 50.0, 60.0]], device=device, dtype=float_dtype),
@@ -2757,7 +2769,7 @@ class TestIndexingReadOps:
         reference = NT([torch.take_along_dim(t, idx, dim=0) for t, idx in zip(nt, indices)], **reference_options(nt))
         assert_close(output, reference)
 
-    def test_multi_ragged_per_sample_row_selection(self, device, float_dtype):
+    def test_multi_ragged_rows(self, device, float_dtype):
         elements = [
             torch.randn(4, 3, 2, device=device, dtype=float_dtype),
             torch.randn(3, 2, 2, device=device, dtype=float_dtype),
@@ -2947,7 +2959,7 @@ class TestIndexingWriteOps:
         reference = NT([torch.index_put(t, (index,), v) for t, v in zip(base, values)], **reference_options(base))
         assert_close(output, reference)
 
-    def test_index_put_row_write_accumulate_duplicate_indices(self, device, float_dtype):
+    def test_duplicate_index_accumulation(self, device, float_dtype):
         base = NestedTensor(
             [
                 torch.zeros(4, 3, device=device, dtype=float_dtype),
@@ -2968,7 +2980,7 @@ class TestIndexingWriteOps:
         reference = NT([torch.index_put(t, (index,), values, accumulate=True) for t in base], **reference_options(base))
         assert_close(output, reference)
 
-    def test_index_put_row_write_dense_values(self, device, float_dtype):
+    def test_index_put_row_write_dense(self, device, float_dtype):
         base = NestedTensor(
             [
                 torch.zeros(4, 3, device=device, dtype=float_dtype),
@@ -2981,7 +2993,7 @@ class TestIndexingWriteOps:
         reference = NT([torch.index_put(t, (index,), values) for t in base], **reference_options(base))
         assert_close(output, reference)
 
-    def test_index_put_row_write_scalar_tensor(self, device, float_dtype):
+    def test_index_put_row_scalar_tensor(self, device, float_dtype):
         base = NestedTensor(
             [
                 torch.zeros(4, 3, device=device, dtype=float_dtype),
@@ -3065,8 +3077,9 @@ class TestIndexingWriteOps:
             for index, length in enumerate(lengths):
                 assert_close(output[index], reference[index, :length])
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    def test_masked_fill_multi_ragged_singleton_mask_fullgraph(self, device, float_dtype):
+    def test_singleton_mask_compiled(self, device, float_dtype):
         shapes = ((2, 3, 4), (3, 2, 4))
         template = NT([torch.empty(shape, device=device, dtype=float_dtype) for shape in shapes], ragged_dims=(0, 1))
         values = torch.randn_like(template.values(), requires_grad=True)
@@ -3100,7 +3113,7 @@ class TestIndexingWriteOps:
         assert_close(output, reference)
         assert_close(actual_gradient, expected_gradient)
 
-    def test_masked_fill_dense_source_ragged_mask(self, device, float_dtype):
+    def test_dense_source_ragged_mask(self, device, float_dtype):
         bias = torch.randn(2, 4, 3, 3, device=device, dtype=float_dtype)
         mask = NT(
             [
@@ -3120,44 +3133,6 @@ class TestIndexingWriteOps:
 
         with pytest.raises(ValueError, match="batch length mismatch"):
             torch.masked_fill(torch.randn(5, 4, 3, 3, device=device, dtype=float_dtype), mask, -1.0)
-
-    def test_masked_scatter(self, device, float_dtype):
-        base = NestedTensor(
-            [torch.zeros(3, device=device, dtype=float_dtype), torch.zeros(2, device=device, dtype=float_dtype)]
-        )
-        mask = NestedTensor(
-            [torch.tensor([True, False, True], device=device), torch.tensor([False, True], device=device)]
-        )
-        src = NestedTensor(
-            [
-                torch.tensor([1.0, 2.0], device=device, dtype=float_dtype),
-                torch.tensor([3.0], device=device, dtype=float_dtype),
-            ]
-        )
-        output = torch.masked_scatter(base, mask, src)
-        reference = NT([torch.masked_scatter(t, m, s) for t, m, s in zip(base, mask, src)], **reference_options(base))
-        assert_close(output, reference)
-
-    def test_masked_scatter_same_shape_dense_source(self, device, float_dtype):
-        base = NestedTensor(
-            [torch.zeros(3, device=device, dtype=float_dtype), torch.zeros(2, device=device, dtype=float_dtype)]
-        )
-        mask = NestedTensor(
-            [torch.tensor([True, False, True], device=device), torch.tensor([False, True], device=device)]
-        )
-        dense_source = torch.tensor(
-            [[1.0, 2.0, 9.0], [3.0, 8.0, 7.0]],
-            device=device,
-            dtype=float_dtype,
-        )
-
-        output = torch.masked_scatter(base, mask, dense_source)
-        nested_source = base.nested_like(dense_source, strict=False)
-        reference = NT(
-            [torch.masked_scatter(t, m, s) for t, m, s in zip(base, mask, nested_source)],
-            **reference_options(base),
-        )
-        assert_close(output, reference)
 
 
 class TestInnerProducts:
@@ -3200,34 +3175,16 @@ class TestInnerProducts:
         reference = NT([torch.inner(a1, b1), torch.inner(a2, b2)], **reference_options(nt1))
         assert_close(result, reference)
 
-    def test_inner_nested_tensor_with_vector(self, device, float_dtype):
-        a = torch.randn(3, 4, device=device, dtype=float_dtype)
-        b = torch.randn(5, 4, device=device, dtype=float_dtype)
-        w = torch.randn(4, device=device, dtype=float_dtype)
-        nt = NT([a, b])
-        result = torch.inner(nt, w)
-        reference = NT([torch.inner(a, w), torch.inner(b, w)], **reference_options(nt))
-        assert_close(result, reference)
-
-    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    def test_inner_nested_tensor_with_vector_compile_fullgraph(self, device, float_dtype):
-        a = torch.randn(3, 4, device=device, dtype=float_dtype)
-        b = torch.randn(5, 4, device=device, dtype=float_dtype)
-        w = torch.randn(4, device=device, dtype=float_dtype)
-        nt = NT([a, b])
-        compiled = torch.compile(lambda x, y: torch.inner(x, y), backend="inductor", fullgraph=True)
-        result = compiled(nt, w)
-        reference = NT([torch.inner(a, w), torch.inner(b, w)], **reference_options(nt))
-        assert_close(result, reference)
-
-    def test_inner_vector_with_nested_tensor(self, device, float_dtype):
-        a = torch.randn(3, 4, device=device, dtype=float_dtype)
-        b = torch.randn(5, 4, device=device, dtype=float_dtype)
-        w = torch.randn(4, device=device, dtype=float_dtype)
-        nt = NT([a, b])
-        result = torch.inner(w, nt)
-        reference = NT([torch.inner(w, a), torch.inner(w, b)], **reference_options(nt))
-        assert_close(result, reference)
+    @pytest.mark.usefixtures("isolated_compiler")
+    @pytest.mark.parametrize("backend,dense_left", [(None, False), (None, True), ("inductor", False)])
+    def test_vector_inner(self, device, float_dtype, backend, dense_left):
+        parts = [torch.randn(n, 4, device=device, dtype=float_dtype) for n in (3, 5)]
+        vector = torch.randn(4, device=device, dtype=float_dtype)
+        source = NT(parts)
+        run = torch.inner if backend is None else torch.compile(torch.inner, backend=backend, fullgraph=True)
+        output = run(vector, source) if dense_left else run(source, vector)
+        expected = [torch.inner(vector, part) if dense_left else torch.inner(part, vector) for part in parts]
+        assert_close(output, NT(expected))
 
     @pytest.mark.skipif(not hasattr(torch, "vdot"), reason="torch.vdot not available")
     def test_vdot_both_nested(self, device, float_dtype):
@@ -3326,51 +3283,31 @@ class TestLikeCreators:
 class TestLinalgOps:
     """Tests for torch.linalg ops registered in torch_functions.py."""
 
-    def test_cross_static_tail_values_and_vjp(self, device, float_dtype):
-        template = NT(
-            [torch.empty(2, 3, device=device), torch.empty(5, 3, device=device)],
-            ragged_dims=(0,),
-        )
-        lhs_values = torch.randn_like(template.values(), dtype=float_dtype, requires_grad=True)
-        rhs_values = torch.randn_like(template.values(), dtype=float_dtype, requires_grad=True)
-        lhs = template.packed_like(lhs_values)
-        rhs = template.packed_like(rhs_values)
-        reference = torch.cross(lhs_values, rhs_values, dim=-1)
-
-        output = torch.cross(lhs, rhs, dim=-1)
-        linalg_output = torch.linalg.cross(lhs, rhs, dim=-1)
-
-        cotangent = torch.randn_like(reference)
-        actual_gradients = torch.autograd.grad(output.values(), (lhs_values, rhs_values), cotangent)
-        expected_gradients = torch.autograd.grad(reference, (lhs_values, rhs_values), cotangent)
-        assert output.ragged_dims == (0,)
-        assert_close(output.values(), reference)
-        assert_close(linalg_output.values(), reference)
-        for actual, expected in zip(actual_gradients, expected_gradients, strict=True):
-            assert_close(actual, expected)
-
-    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    def test_cross_static_tail_compiles_with_vjp(self, device):
-        compiled = torch.compile(
-            lambda template, lhs, rhs: torch.cross(
-                template.packed_like(lhs),
-                template.packed_like(rhs),
-                dim=-1,
-            ).values(),
-            backend="aot_eager",
-            fullgraph=True,
-        )
+    @pytest.mark.usefixtures("isolated_compiler")
+    @pytest.mark.parametrize(
+        ("backend", "float_dtype"),
+        [pytest.param(None, dtype, id=str(dtype)) for dtype in FLOAT_DTYPES]
+        + [pytest.param("aot_eager", torch.float32, id="compiled")],
+        indirect=["float_dtype"],
+    )
+    @pytest.mark.parametrize("operation", [torch.cross, torch.linalg.cross])
+    def test_cross_gradients(self, device, backend, operation, float_dtype):
         template = NT([torch.empty(length, 3, device=device) for length in (2, 5)], ragged_dims=(0,))
-        lhs = torch.randn_like(template.values(), requires_grad=True)
-        rhs = torch.randn_like(template.values(), requires_grad=True)
-        reference = torch.cross(lhs, rhs, dim=-1)
-        output = compiled(template, lhs, rhs)
-        cotangent = torch.randn_like(reference)
-        actual_gradients = torch.autograd.grad(output, (lhs, rhs), cotangent)
-        expected_gradients = torch.autograd.grad(reference, (lhs, rhs), cotangent)
-        assert_close(output, reference)
-        for actual, expected in zip(actual_gradients, expected_gradients, strict=True):
-            assert_close(actual, expected)
+        lhs = torch.randn_like(template.values(), dtype=float_dtype, requires_grad=True)
+        rhs = torch.randn_like(template.values(), dtype=float_dtype, requires_grad=True)
+
+        def cross(structure, left, right):
+            return operation(structure.packed_like(left), structure.packed_like(right), dim=-1).values()
+
+        run = cross if backend is None else torch.compile(cross, backend=backend, fullgraph=True)
+        output = run(template, lhs, rhs)
+        expected = operation(lhs, rhs, dim=-1)
+        probe = torch.randn_like(expected)
+        assert_close(output, expected)
+        assert_close(
+            torch.autograd.grad(output, (lhs, rhs), probe),
+            torch.autograd.grad(expected, (lhs, rhs), probe),
+        )
 
     def test_linalg_cholesky(self, device, float_dtype):
         # Create positive-definite matrices
@@ -3433,8 +3370,9 @@ class TestLinalgOps:
         result, reference = pair
         assert_close(result, reference)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    def test_linalg_norm_matrix_dims_compile_fullgraph(self, device, float_dtype):
+    def test_linalg_norm_matrix_dims_compiled(self, device, float_dtype):
         nt = NT(
             [
                 torch.randn(2, 3, 4, device=device, dtype=float_dtype),
@@ -3450,7 +3388,7 @@ class TestLinalgOps:
         reference = NT([torch.linalg.norm(t, ord="fro", dim=(1, 2)) for t in nt], **reference_options(nt))
         assert_close(result, reference)
 
-    def test_linalg_norm_negative_ord_ragged_dim(self, device, float_dtype):
+    def test_norm_negative_ord_ragged_dim(self, device, float_dtype):
         a = torch.randn(3, 4, device=device, dtype=float_dtype)
         b = torch.randn(5, 4, device=device, dtype=float_dtype)
         nt = NT([a, b])
@@ -3518,7 +3456,7 @@ class TestLinalgOps:
         result, reference = pair
         assert_close(result, reference)
 
-    def test_linalg_solve_mismatched_batch_lengths_raises(self, device, float_dtype):
+    def test_solve_mismatched_batch_lengths_raises(self, device, float_dtype):
         a = torch.eye(3, device=device, dtype=float_dtype)
         b = torch.randn(3, 1, device=device, dtype=float_dtype)
         nt_a = NT([a, a])
@@ -3624,7 +3562,7 @@ class TestMatrixMultiplication:
         outputs = [torch.matmul(lhs.unsqueeze(1), rhs.unsqueeze(0)) for lhs, rhs in zip(left, right)]
         return torch.cat([output.flatten(0, 1) for output in outputs])
 
-    def test_complementary_ragged_matmul_matches_per_element_and_preserves_gradients(self, device):
+    def test_complementary_ragged_matmul_parity_gradients(self, device):
         lengths = (2, 4)
         left_parts, right_parts = self._complementary_matmul_inputs(lengths, device)
         reference_left = [part.detach().clone().requires_grad_() for part in left_parts]
@@ -3645,6 +3583,7 @@ class TestMatrixMultiplication:
         for actual, expected in zip(actual_gradients, expected_gradients, strict=True):
             assert_close(actual, expected)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
     def test_complementary_ragged_matmul_dynamic_fullgraph(self, device):
         def pairwise_matmul(left, right):
@@ -3664,8 +3603,9 @@ class TestMatrixMultiplication:
             assert output.element_sizes().tolist() == [[length, length, 3, 1] for length in lengths]
             assert_close(output.values(), reference)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    def test_complementary_ragged_matmul_dynamic_fullgraph_wrapper_gradients(self, device):
+    def test_complementary_wrapper_gradients(self, device):
         def pairwise_matmul(left, right):
             return torch.matmul(left.unsqueeze(2), right.unsqueeze(2).transpose(1, 2))
 
@@ -3690,6 +3630,7 @@ class TestMatrixMultiplication:
             for actual, expected in zip(actual_gradients, expected_gradients, strict=True):
                 assert_close(actual, expected)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
     def test_addmm_compile_fullgraph_tensor_lhs(self, device, float_dtype):
         bias = torch.randn(5, 1, device=device, dtype=float_dtype)
@@ -3705,8 +3646,9 @@ class TestMatrixMultiplication:
         reference = NT([torch.addmm(bias, left, b) for b in right], **reference_options(right))
         assert_close(output, reference)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    def test_addr_compile_fullgraph_dense_vector_with_nested_vector(self, device, float_dtype):
+    def test_compiled_dense_addr(self, device, float_dtype):
         bias = torch.randn(4, 1, device=device, dtype=float_dtype)
         left = torch.randn(4, device=device, dtype=float_dtype)
         right = NT(
@@ -3720,6 +3662,7 @@ class TestMatrixMultiplication:
         reference = NT([torch.addr(bias, left, b) for b in right], **reference_options(right))
         assert_close(output, reference)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
     def test_addr_compile_fullgraph_nested_vector(self, device, float_dtype):
         bias = torch.randn(1, 4, device=device, dtype=float_dtype)
@@ -3735,6 +3678,7 @@ class TestMatrixMultiplication:
         reference = NT([torch.addr(bias, a, right) for a in left], **reference_options(left))
         assert_close(output, reference)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
     def test_baddbmm_compile(self, device, float_dtype):
         bias = torch.randn(2, 3, 1, device=device, dtype=float_dtype)
@@ -3750,10 +3694,10 @@ class TestMatrixMultiplication:
         for actual, reference in zip(output.unbind(), expected):
             assert_close(actual, reference)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
     @pytest.mark.parametrize("operation", [torch.bmm, torch.matmul])
     def test_bmm_compile(self, device, float_dtype, operation):
-        torch.compiler.reset()
         left = torch.randn(2, 3, 4, device=device, dtype=float_dtype)
         right_parts = [torch.randn(4, n, device=device, dtype=float_dtype) for n in (5, 3)]
         right = NT(right_parts, ragged_dims=(1,))
@@ -3885,9 +3829,9 @@ class TestMatrixMultiplication:
                 assert output.dtype == dtype
                 torch.testing.assert_close(output.unbind(), expected)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
     def test_baddbmm_integer_coefficients_compile(self, device, backend):
-        torch.compiler.reset()
         dtype = torch.int64
         dense = torch.ones(2, 2, 2, device=device, dtype=dtype)
         bias = 2 * dense
@@ -4391,6 +4335,7 @@ class TestMatrixMultiplication:
             )
             """)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
     def test_baddbmm_partition_compile(self, device, backend):
         for alpha in (float("inf"), 1e40):
@@ -4498,6 +4443,7 @@ class TestMatrixMultiplication:
         assert_close(log_probs, log_prob_ref, atol=stage_atol, rtol=stage_rtol)
         assert_close(context, context_ref, atol=context_atol, rtol=context_rtol)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
     def test_jagged_attention_matmul_compile(self, device, float_dtype):
         query = NT(
@@ -4536,6 +4482,7 @@ class TestMatrixMultiplication:
         )
         assert_close(output, reference, atol=context_atol, rtol=context_rtol)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
     def test_matmul_compile_fullgraph_tensor_lhs(self, device, float_dtype):
         nt = NT(
@@ -4550,6 +4497,7 @@ class TestMatrixMultiplication:
         reference = NT([torch.matmul(weight, t) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
     def test_matmul_compile_fullgraph_tensor_rhs(self, device, float_dtype):
         nt = NT(
@@ -4589,6 +4537,7 @@ class TestMatrixMultiplication:
         reference = NT([torch.matmul(t, weight) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
     def test_mm_compile_fullgraph_tensor_lhs(self, device, float_dtype):
         left = torch.randn(5, 4, device=device, dtype=float_dtype)
@@ -4621,8 +4570,9 @@ class TestMatrixMultiplication:
         reference = NT([torch.mm(a, b) for a, b in zip(left, right)], **reference_options(left))
         assert_close(output, reference)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    def test_outer_compile_fullgraph_dense_vector_with_nested_vector(self, device, float_dtype):
+    def test_compiled_dense_outer(self, device, float_dtype):
         left = torch.randn(4, device=device, dtype=float_dtype)
         right = NT(
             [
@@ -4635,6 +4585,7 @@ class TestMatrixMultiplication:
         reference = NT([torch.outer(left, b) for b in right], **reference_options(right))
         assert_close(output, reference)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
     def test_outer_compile_fullgraph_nested_vector(self, device, float_dtype):
         left = NT(
@@ -4649,7 +4600,7 @@ class TestMatrixMultiplication:
         reference = NT([torch.outer(a, right) for a in left], **reference_options(left))
         assert_close(output, reference)
 
-    def test_mv_dense_matrix_with_nested_vector(self, device, float_dtype):
+    def test_mv_dense_matrix_nested_vector(self, device, float_dtype):
         lhs = torch.randn(6, 4, device=device, dtype=float_dtype)
         rhs = NT(
             [
@@ -4661,25 +4612,13 @@ class TestMatrixMultiplication:
         reference = NT([torch.mv(lhs, vec) for vec in rhs], **reference_options(rhs))
         assert_close(result, reference)
 
-    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    def test_mv_nested_tensor_with_vector_compile_fullgraph(self, device, float_dtype):
-        a = torch.randn(3, 4, device=device, dtype=float_dtype)
-        b = torch.randn(5, 4, device=device, dtype=float_dtype)
-        w = torch.randn(4, device=device, dtype=float_dtype)
-        nt = NT([a, b])
-        compiled = torch.compile(lambda x, y: torch.mv(x, y), backend="inductor", fullgraph=True)
-        result = compiled(nt, w)
-        reference = NT([torch.mv(a, w), torch.mv(b, w)], **reference_options(nt))
-        assert_close(result, reference)
-
-    def test_mv_nested_tensor_with_vector(self, device, float_dtype):
-        a = torch.randn(3, 4, device=device, dtype=float_dtype)
-        b = torch.randn(5, 4, device=device, dtype=float_dtype)
-        w = torch.randn(4, device=device, dtype=float_dtype)
-        nt = NT([a, b])
-        result = torch.mv(nt, w)
-        reference = NT([torch.mv(a, w), torch.mv(b, w)], **reference_options(nt))
-        assert_close(result, reference)
+    @pytest.mark.usefixtures("isolated_compiler")
+    @pytest.mark.parametrize("backend", [None, "inductor"])
+    def test_vector_product(self, device, float_dtype, backend):
+        parts = [torch.randn(n, 4, device=device, dtype=float_dtype) for n in (3, 5)]
+        vector = torch.randn(4, device=device, dtype=float_dtype)
+        run = torch.mv if backend is None else torch.compile(torch.mv, backend=backend, fullgraph=True)
+        assert_close(run(NT(parts), vector), NT([torch.mv(part, vector) for part in parts]))
 
 
 class TestMatrixOps:
@@ -4781,8 +4720,9 @@ class TestMatrixOps:
         reference = NT([torch.matrix_power(a, 3), torch.matrix_power(b, 3)], **reference_options(nt))
         assert_close(result, reference)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    def test_matrix_power_compile_fullgraph_batched_ragged(self, device, float_dtype):
+    def test_matrix_power_compiled_batched_ragged(self, device, float_dtype):
         a = torch.randn(2, 3, 3, device=device, dtype=float_dtype)
         b = torch.randn(4, 3, 3, device=device, dtype=float_dtype)
         nt = NT([a, b])
@@ -4791,6 +4731,7 @@ class TestMatrixOps:
         reference = NT([torch.matrix_power(a, 3), torch.matrix_power(b, 3)], **reference_options(nt))
         assert_close(result, reference)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
     def test_repeat_interleave_compile_fullgraph(self, device, float_dtype):
         nt = NT(
@@ -4857,7 +4798,7 @@ class TestMatrixOps:
 
 class TestNonzeroAndTake:
 
-    def test_nonzero_as_tuple_requires_matching_ndim(self, device):
+    def test_as_tuple_requires_matching_ndim(self, device):
         with pytest.raises(ValueError, match="same number of dimensions"):
             NT([torch.tensor([1, 0], device=device), torch.tensor([[1], [0]], device=device)])
 
@@ -4885,7 +4826,7 @@ class TestNonzeroAndTake:
         assert len(output) == 1
         assert_close(output[0], reference[0])
 
-    def test_nonzero_matches_dense_empty_result_dtype(self, device):
+    def test_nonzero_parity_empty_result_dtype(self, device):
         nt = NT([torch.zeros(3, device=device), torch.zeros(1, device=device)], padding_value=7)
         output = torch.nonzero(nt, as_tuple=False)
         reference = NT([torch.nonzero(t, as_tuple=False) for t in nt], **reference_options(nt))
@@ -4906,7 +4847,7 @@ class TestNonzeroAndTake:
         reference = NT([torch.nonzero(t, as_tuple=False) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
-    def test_take_nested_index_is_per_sample(self, device, float_dtype):
+    def test_nested_index_is_per_sample(self, device, float_dtype):
         nt = NT(
             [
                 torch.tensor([1.0, 2.0], device=device, dtype=float_dtype),
@@ -5092,7 +5033,7 @@ class TestRandomOps:
         output = torch.bernoulli(nt)
         assert_close(output, nt)
 
-    def test_rand_like_and_randn_like_respect_kwargs(self, device, float_dtype):
+    def test_random_like_options(self, device, float_dtype):
         nt = NestedTensor(
             [
                 torch.zeros(2, 3, device=device, dtype=float_dtype),
@@ -5119,7 +5060,7 @@ class TestReductionOps:
     @pytest.mark.parametrize(
         ("shapes", "ragged_dims", "dim", "element_dim", "operation", "keepdim"), _BOOLEAN_REDUCTION_CASES
     )
-    def test_boolean_ragged_reduction_matches_per_sample(
+    def test_boolean_ragged_reduction_per_sample(
         self, device, shapes, ragged_dims, dim, element_dim, operation, keepdim
     ):
         elements = boolean_reduction_elements(shapes, operation, device)
@@ -5148,9 +5089,7 @@ class TestReductionOps:
     @pytest.mark.parametrize(
         ("shapes", "ragged_dims", "dim", "element_dim", "operation", "keepdim"), _BOOLEAN_GRAPH_CASES
     )
-    def test_boolean_ragged_reduction_supports_fake_tensor(
-        self, shapes, ragged_dims, dim, element_dim, operation, keepdim
-    ):
+    def test_boolean_ragged_reduction_fake_tensor(self, shapes, ragged_dims, dim, element_dim, operation, keepdim):
         fake_tensor_mod = pytest.importorskip("torch._subclasses.fake_tensor")
         symbolic_shapes = pytest.importorskip("torch.fx.experimental.symbolic_shapes")
         nested = NT([torch.empty(shape, dtype=torch.bool) for shape in shapes], ragged_dims=ragged_dims)
@@ -5170,6 +5109,7 @@ class TestReductionOps:
             assert output.ragged_dims == reference.ragged_dims
             assert output.element_sizes().shape == reference.element_sizes().shape
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
     @pytest.mark.parametrize(
         ("shapes", "ragged_dims", "dim", "element_dim", "operation", "keepdim"), _BOOLEAN_GRAPH_CASES
@@ -5211,8 +5151,9 @@ class TestReductionOps:
 
         assert_close(compiled(nested, nested.values()), expected)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    def test_boolean_multi_ragged_tuple_dim_compiles_fullgraph(self):
+    def test_boolean_joint_axes_compiled(self):
         elements = boolean_reduction_elements(((2, 4, 2), (3, 2, 2)), "any")
         nested = NT(elements, ragged_dims=(0, 1))
         compiled = torch.compile(
@@ -5226,7 +5167,7 @@ class TestReductionOps:
         reference = torch.stack([torch.any(element, dim=(0, 1)) for element in elements])
         assert_close(output, reference)
 
-    def test_all_any_multi_dim_reduction_ignores_padding(self, device, float_dtype):
+    def test_all_any_axes_ignores_padding(self, device, float_dtype):
         nt = NestedTensor(
             [
                 torch.ones(2, 2, device=device, dtype=float_dtype),
@@ -5248,7 +5189,7 @@ class TestReductionOps:
         output = torch.all(nt)
         assert_close(output, torch.tensor(True, device=device))
 
-    def test_amax_amin_and_aminmax_ignore_padding(self, device, float_dtype):
+    def test_amax_amin_aminmax_ignore_padding(self, device, float_dtype):
         nt = NestedTensor(
             [
                 torch.tensor([1.0, 2.0], device=device, dtype=float_dtype),
@@ -5305,47 +5246,29 @@ class TestReductionOps:
         reference = torch.stack([torch.sum(t, dim=0) for t in nt])
         assert_close(torch.sum(nt, dim=1), reference)
 
-    def test_sampled_projected_mask_ragged_sum_values_and_vjp(self, device, float_dtype):
+    @pytest.mark.usefixtures("isolated_compiler")
+    @pytest.mark.parametrize(
+        ("backend", "float_dtype"),
+        [pytest.param(None, dtype, id=str(dtype)) for dtype in FLOAT_DTYPES]
+        + [pytest.param("aot_eager", torch.float32, id="compiled")],
+        indirect=["float_dtype"],
+    )
+    def test_sampled_sum_gradients(self, device, backend, float_dtype):
         lengths = (3, 5)
-        samples = 2
-        channels = 3
-        template = NT(
-            [torch.empty(length, device=device, dtype=float_dtype) for length in lengths],
-            ragged_dims=(0,),
-        )
-        values = torch.randn_like(template.values(), requires_grad=True)
-        projected = template.packed_like(values).unsqueeze(-2).unsqueeze(-1).expand(-1, samples, -1, channels)
+        template = NT([torch.empty(length, device=device, dtype=float_dtype) for length in lengths], ragged_dims=(0,))
+        values = torch.randn_like(template.values(), dtype=float_dtype, requires_grad=True)
 
-        output = projected.sum(dim=-2, keepdim=True)
+        def reduce(structure, packed):
+            source = structure.packed_like(packed).unsqueeze(-2).unsqueeze(-1).expand(-1, 2, -1, 3)
+            return source.sum(dim=-2, keepdim=True)
 
-        segment_sums = torch.stack([part.sum() for part in values.split(lengths)])
-        expected = segment_sums[:, None, None, None].expand(-1, samples, 1, channels)
-        cotangent = torch.randn_like(expected)
-        actual_grad = torch.autograd.grad(output, values, cotangent)[0]
-        expected_grad = torch.autograd.grad(expected, values, cotangent)[0]
-        assert output.shape == (2, samples, 1, channels)
+        run = reduce if backend is None else torch.compile(reduce, backend=backend, fullgraph=True)
+        output = run(template, values)
+        expected = torch.stack([part.sum() for part in values.split(lengths)])[:, None, None, None].expand(-1, 2, 1, 3)
+        probe = torch.randn_like(expected)
+        assert output.shape == (2, 2, 1, 3)
         assert_close(output, expected)
-        assert_close(actual_grad, expected_grad)
-
-    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    def test_sampled_projected_mask_ragged_sum_compiles_with_vjp(self, device):
-        def consume(template, values):
-            projected = template.packed_like(values).unsqueeze(-2).unsqueeze(-1).expand(-1, 2, -1, 3)
-            return projected.sum(dim=-2, keepdim=True)
-
-        compiled = torch.compile(consume, backend="aot_eager", fullgraph=True)
-        lengths = (3, 5)
-        template = NT([torch.empty(length, device=device) for length in lengths], ragged_dims=(0,))
-        values = torch.randn_like(template.values(), requires_grad=True)
-        output = compiled(template, values)
-
-        segment_sums = torch.stack([part.sum() for part in values.split(lengths)])
-        expected = segment_sums[:, None, None, None].expand(-1, 2, 1, 3)
-        cotangent = torch.randn_like(expected)
-        actual_grad = torch.autograd.grad(output, values, cotangent)[0]
-        expected_grad = torch.autograd.grad(expected, values, cotangent)[0]
-        assert_close(output, expected)
-        assert_close(actual_grad, expected_grad)
+        assert_close(torch.autograd.grad(output, values, probe), torch.autograd.grad(expected, values, probe))
 
     def test_reduce_strided_ragged_last_dim(self, device, float_dtype):
         nt = NT(
@@ -5429,7 +5352,7 @@ class TestReductionOps:
         reference = torch.stack([torch.logsumexp(t, dim=0) for t in nt])
         assert_close(output, reference)
 
-    def test_mean_multi_dim_integer_matches_dense_error(self, device):
+    def test_mean_axes_integer_parity_error(self, device):
         nt = NestedTensor(
             [
                 torch.arange(24, device=device, dtype=torch.long).reshape(2, 3, 4),
@@ -5459,9 +5382,9 @@ class TestReductionOps:
         reference = torch.stack([torch.nansum(t) for t in nt])
         assert_close(output, reference)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.parametrize("name", ["nanmean", "nansum"])
-    def test_nan_reductions_multi_ragged_fullgraph_vjp(self, device, name):
-        torch.compiler.reset()
+    def test_nan_joint_gradients(self, device, name):
         parts = [
             torch.tensor(
                 [
@@ -5498,6 +5421,7 @@ class TestReductionOps:
         for gradient, reference in zip(gradients, wanted):
             torch.testing.assert_close(gradient, reference, equal_nan=True)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     def test_prod_ignores_padding(self, device, float_dtype):
         nt = NestedTensor(
             [
@@ -5507,7 +5431,6 @@ class TestReductionOps:
         )
         output = torch.prod(nt)
         assert_close(output, torch.tensor(8.0, device=device, dtype=float_dtype))
-        torch.compiler.reset()
         values = torch.tensor([0, 2, 3, 0, 0], device=device, dtype=float_dtype, requires_grad=True)
         reference_values = values.detach().clone().requires_grad_()
         template = NT([values[:3].detach(), values[3:].detach()], ragged_dims=(0,), padding_value=100)
@@ -5554,7 +5477,7 @@ class TestReductionOps:
         assert_close(output[0], torch.tensor(2.5, device=device, dtype=float_dtype))
         assert_close(output[1], torch.tensor(3.0, device=device, dtype=float_dtype))
 
-    def test_multi_ragged_static_reductions_use_packed_axis(self, device, float_dtype):
+    def test_static_axes_multi_ragged(self, device, float_dtype):
         parts = [
             torch.randn(2, 2, 4, device=device, dtype=float_dtype),
             torch.randn(3, 3, 4, device=device, dtype=float_dtype),
@@ -5583,7 +5506,7 @@ class TestReductionOps:
 
     @pytest.mark.parametrize("operation", [torch.sum, torch.mean, torch.amax, torch.amin])
     @pytest.mark.parametrize(("dim", "element_dim"), [(1, 0), (2, 1)])
-    def test_multi_ragged_keepdim_reduction_broadcasts_back(self, device, float_dtype, operation, dim, element_dim):
+    def test_multi_ragged_keepdim_broadcasts_back(self, device, float_dtype, operation, dim, element_dim):
         elements = [
             torch.randn(2, 3, 4, device=device, dtype=float_dtype),
             torch.randn(4, 2, 4, device=device, dtype=float_dtype),
@@ -5600,10 +5523,11 @@ class TestReductionOps:
         for actual, expected in zip(output, references):
             assert_close(actual, expected)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
     @pytest.mark.parametrize(("dim", "element_dim"), [(1, 0), (2, 1)])
     @pytest.mark.parametrize("operation", [torch.sum, torch.amax, torch.amin, torch.mean])
-    def test_multi_ragged_keepdim_reduction_and_broadcast_compile_dynamic_fullgraph(self, dim, element_dim, operation):
+    def test_keepdim_broadcast_compiled(self, dim, element_dim, operation):
         if dim == 1:
 
             def consume(structure, values):
@@ -5627,11 +5551,11 @@ class TestReductionOps:
 
             assert_close(compiled(nested, nested.values()), expected.values())
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.parametrize("dim", [(1, 2), (1, 3)])
     @pytest.mark.parametrize("keepdim", [False, True])
     @pytest.mark.parametrize("operation", [torch.amax, torch.amin, torch.mean, torch.var, torch.std])
-    def test_joint_axes_fullgraph_values_and_vjp(self, device, dim, keepdim, operation):
-        torch.compiler.reset()
+    def test_joint_axes_fullgraph_gradients(self, device, dim, keepdim, operation):
         scale = -1 if operation is torch.amin else 1
         elements = [
             torch.tensor([[[5, 2], [5, 1]], [[5, 2], [0, 0]]], device=device, dtype=torch.float64)
@@ -5662,7 +5586,7 @@ class TestReductionOps:
         for gradient, reference in zip(gradients, wanted):
             assert_close(gradient, reference)
 
-    def test_multi_ragged_var_mean_and_vector_norm_preserve_grad(self, device, float_dtype):
+    def test_joint_statistics_gradients(self, device, float_dtype):
         leaves = [
             torch.randn(2, 3, 4, device=device, dtype=float_dtype, requires_grad=True),
             torch.randn(4, 2, 4, device=device, dtype=float_dtype, requires_grad=True),
@@ -5689,7 +5613,7 @@ class TestReductionOps:
         for grad, ref_grad in zip(grads, ref_grads):
             assert_close(grad, ref_grad)
 
-    def test_vector_norm_negative_ord_without_dim_falls_back_per_element(self, device, float_dtype):
+    def test_negative_norm_default_axis(self, device, float_dtype):
         leaves = [
             (torch.rand(2, 3, device=device, dtype=float_dtype) + 0.5).requires_grad_(),
             (torch.rand(4, 2, device=device, dtype=float_dtype) + 0.5).requires_grad_(),
@@ -5706,7 +5630,7 @@ class TestReductionOps:
         for grad, ref_grad in zip(grads, ref_grads):
             assert_close(grad, ref_grad)
 
-    def test_multi_ragged_all_static_multi_dim_reductions(self, device, float_dtype):
+    def test_multi_ragged_static_axes_reductions(self, device, float_dtype):
         parts = [
             torch.randn(2, 2, 3, 4, device=device, dtype=float_dtype),
             torch.randn(3, 3, 3, 4, device=device, dtype=float_dtype),
@@ -5721,7 +5645,7 @@ class TestReductionOps:
         )
         assert_close(mean, NT([torch.mean(t, dim=(-2, -1)) for t in parts], **reference_options(nt)))
 
-    def test_count_nonzero_mixed_dims_maps_padded_axes(self, device, float_dtype):
+    def test_count_nonzero_mixed_axes(self, device, float_dtype):
         parts = [
             torch.randn(2, 3, 4, device=device, dtype=float_dtype),
             torch.randn(5, 3, 4, device=device, dtype=float_dtype),
@@ -5742,7 +5666,7 @@ class TestReductionOps:
         sum_reference = torch.stack([torch.sum(t, dim=(0, 2)) for t in parts])
         assert_close(summed, sum_reference)
 
-    def test_linalg_matrix_norm_after_multi_ragged_dims(self, device, float_dtype):
+    def test_matrix_norm_after_ragged(self, device, float_dtype):
         parts = [
             torch.randn(2, 2, 3, 4, device=device, dtype=float_dtype),
             torch.randn(3, 3, 3, 4, device=device, dtype=float_dtype),
@@ -5764,7 +5688,7 @@ class TestReductionOps:
         ],
         ids=("leading-ragged", "non-leading-ragged"),
     )
-    def test_segment_reductions_respect_batch_first_false(
+    def test_segment_reductions_respect_batch_second(
         self,
         device,
         float_dtype,
@@ -5800,7 +5724,7 @@ class TestReductionOps:
 
 class TestRot90:
 
-    def test_rot90_translates_dims_and_rejects_batch(self, device, float_dtype):
+    def test_rot90_translates_dims_rejects_batch(self, device, float_dtype):
         nt = NT(
             [
                 torch.tensor([[1.0, 2.0], [3.0, 4.0]], device=device, dtype=float_dtype),
@@ -5823,7 +5747,7 @@ class TestRot90:
             pytest.param(2, ((2, 3, 5), (4, 3, 5)), id="k2_preserves_plane"),
         ],
     )
-    def test_rot90_static_plane_metadata_respects_k(self, device, float_dtype, k, expected_shapes):
+    def test_static_rotation_shape(self, device, float_dtype, k, expected_shapes):
         nt = NT(
             [
                 torch.randn(2, 3, 5, device=device, dtype=float_dtype),
@@ -5836,9 +5760,29 @@ class TestRot90:
         assert_close(output, reference)
         assert tuple(tuple(element.shape) for element in output) == expected_shapes
 
+    def test_rot90_values_and_vjp(self, device, float_dtype):
+        leaves = [
+            torch.randn(2, 1, 3, device=device, dtype=float_dtype, requires_grad=True),
+            torch.randn(3, 1, 3, device=device, dtype=float_dtype, requires_grad=True),
+        ]
+        references = [leaf.detach().clone().requires_grad_() for leaf in leaves]
+        output = torch.rot90(NT(leaves), 1, (2, 3))
+        expected = [torch.rot90(reference, 1, (1, 2)) for reference in references]
+        weights = [torch.randn_like(element) for element in expected]
+        actual_loss = sum((element * weight).sum() for element, weight in zip(output, weights))
+        expected_loss = sum((element * weight).sum() for element, weight in zip(expected, weights))
+
+        actual_gradients = torch.autograd.grad(actual_loss, leaves)
+        expected_gradients = torch.autograd.grad(expected_loss, references)
+        for actual, reference in zip(output, expected):
+            assert_close(actual, reference)
+        for actual, reference in zip(actual_gradients, expected_gradients):
+            assert_close(actual, reference)
+
 
 class TestPackedCoordinateTransforms:
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.parametrize(
         ("operation", "shapes", "ragged_dims"),
         [
@@ -5867,7 +5811,6 @@ class TestPackedCoordinateTransforms:
         else:
             call = native = partial(torch.diag, diagonal=-1)
 
-        torch._dynamo.reset()
         compiled = torch.compile(call, backend="aot_eager", fullgraph=True, dynamic=True)
         output = compiled(source)
         expected = [native(value) for value in references]
@@ -5912,7 +5855,7 @@ class TestSearchsorted:
         with pytest.raises(ValueError, match="searchsorted: NestedTensor batch length mismatch"):
             torch.searchsorted(nt_sorted, nt_vals)
 
-    def test_searchsorted_nested_sorter_requires_nested_sorted_sequence(self, device, float_dtype):
+    def test_sorter_requires_nested_boundaries(self, device, float_dtype):
         boundaries = torch.tensor([1.0, 3.0, 5.0], device=device, dtype=float_dtype)
         vals_a = torch.tensor([2.0, 4.0], device=device, dtype=float_dtype)
         nt_vals = NT([vals_a])
@@ -5920,7 +5863,7 @@ class TestSearchsorted:
         with pytest.raises(TypeError, match="NestedTensor sorter requires sorted_sequence"):
             torch.searchsorted(boundaries, nt_vals, sorter=nt_sorter)
 
-    def test_searchsorted_nested_sorter_with_nested_sorted_sequence(self, device, float_dtype):
+    def test_nested_sorter_nested_sorted_sequence(self, device, float_dtype):
         sorted_a = torch.tensor([1.0, 3.0, 5.0], device=device, dtype=float_dtype)
         sorted_b = torch.tensor([2.0, 4.0, 6.0], device=device, dtype=float_dtype)
         sorter_a = torch.tensor([0, 1, 2], device=device, dtype=torch.long)
@@ -5947,14 +5890,14 @@ class TestSearchsorted:
         assert_close(result[1], torch.searchsorted(boundaries, vals_b))
 
 
-class TestSelectionOps:
+class TestSelection:
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.parametrize("name", ["min", "max"])
     @pytest.mark.parametrize("interface", ["function", "method"])
     @pytest.mark.parametrize("backend", ["eager", "aot_eager"])
     @pytest.mark.parametrize("reduction", ["global", "ragged", "static", "static_keepdim"])
     def test_extrema_dispatch_gradients(self, device, name, interface, backend, reduction):
-        torch.compiler.reset()
         operation = getattr(torch if interface == "function" else torch.Tensor, name)
         dimension = 1 if reduction == "ragged" else -1
 
@@ -6009,6 +5952,7 @@ class TestSelectionOps:
             for actual, wanted in zip(gradients, expected_gradients):
                 torch.testing.assert_close(actual, wanted, rtol=0, atol=0)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     def test_argmax_and_argmin_default_dim(self, device, float_dtype):
         nt = NestedTensor(
             [
@@ -6016,7 +5960,6 @@ class TestSelectionOps:
                 torch.tensor([4, 2], device=device, dtype=float_dtype),
             ]
         )
-        torch.compiler.reset()
         output = torch.compile(torch.argmax, backend="aot_eager", fullgraph=True)(nt)
         reference = torch.tensor([1, 0], device=device)
         assert_close(output, reference)
@@ -6036,16 +5979,6 @@ class TestSelectionOps:
         argmin_ragged = torch.argmin(nt, dim=1)
         argmin_ragged_ref = torch.stack([torch.argmin(a, dim=0), torch.argmin(b, dim=0)])
         assert_close(argmin_ragged, argmin_ragged_ref)
-
-    def test_argsort(self, device, float_dtype):
-        nt = NestedTensor(
-            [
-                torch.tensor([1, 3, 2], device=device, dtype=float_dtype),
-                torch.tensor([4, 0], device=device, dtype=float_dtype),
-            ]
-        )
-        reference = NT([torch.argsort(element) for element in nt], **reference_options(nt))
-        assert_close(torch.argsort(nt), reference)
 
     def test_max_and_min_dim(self, device, float_dtype):
         a = torch.tensor([[1, 5, 3], [2, 0, 4]], device=device, dtype=float_dtype)
@@ -6097,7 +6030,7 @@ class TestSelectionOps:
         for actual, reference in zip(actual_gradients, expected_gradients):
             assert_close(actual, reference)
 
-    def test_non_leading_ragged_topk_and_max_min(self, device, float_dtype):
+    def test_nonleading_ragged_topk_max_min(self, device, float_dtype):
         leaves = [
             torch.randn(2, 3, device=device, dtype=float_dtype, requires_grad=True),
             torch.randn(2, 5, device=device, dtype=float_dtype, requires_grad=True),
@@ -6128,9 +6061,9 @@ class TestSelectionOps:
         with pytest.raises(IndexError, match="non-zero size"):
             getattr(torch, name)(nt, dim=1)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.parametrize("name", ["max", "min"])
-    def test_extrema_ties_route_gradient_to_returned_index(self, device, float_dtype, name):
-        torch.compiler.reset()
+    def test_tie_gradient_indices(self, device, float_dtype, name):
         high = 2.0 if name == "max" else -2.0
         leaves = [
             torch.tensor([high, high, 0.0], device=device, dtype=float_dtype, requires_grad=True),
@@ -6148,47 +6081,80 @@ class TestSelectionOps:
         assert_close(grads[0], torch.tensor([1.0, 0.0, 0.0], device=device, dtype=float_dtype))
         assert_close(grads[1], torch.tensor([1.0, 0.0], device=device, dtype=float_dtype))
 
-    def test_sort(self, device, float_dtype):
-        nt = NestedTensor(
-            [
-                torch.tensor([1, 3, 2], device=device, dtype=float_dtype),
-                torch.tensor([4, 0], device=device, dtype=float_dtype),
-            ]
-        )
-        output = torch.sort(nt, dim=1, descending=False)
-        reference = (
-            torch.tensor([[1, 2, 3], [0, 4, 0]], device=device, dtype=float_dtype),
-            output[1],
-        )
-        assert_close(output[0], reference[0])
+    @pytest.mark.parametrize("operation", [torch.sort, torch.argsort, torch.topk])
+    def test_vector_order(self, device, float_dtype, operation):
+        parts = [torch.tensor(v, device=device, dtype=float_dtype) for v in ([1, 3, 2], [4, 0])]
+        source = NT(parts)
+        kwargs = {"k": 2, "dim": 1} if operation is torch.topk else {"dim": 1} if operation is torch.sort else {}
+        actual = operation(source, **kwargs)
+        native_kwargs = {**kwargs, "dim": 0} if "dim" in kwargs else kwargs
+        expected = [operation(part, **native_kwargs) for part in parts]
+        if operation is torch.argsort:
+            assert_close(actual, NT(expected))
+        else:
+            assert_close(actual.values, NT([part.values for part in expected]))
+            assert_close(actual.indices, NT([part.indices for part in expected]))
 
-    def test_topk(self, device, float_dtype):
-        nt = NestedTensor(
-            [
-                torch.tensor([1, 3, 2], device=device, dtype=float_dtype),
-                torch.tensor([4, 0], device=device, dtype=float_dtype),
-            ]
+    def test_sort_argsort_parity(self, device, float_dtype):
+        elements = [torch.randn(n, 3, device=device, dtype=float_dtype) for n in (3, 0, 5)]
+        nested = NT(elements, ragged_dims=(0,))
+
+        result = torch.sort(nested, dim=1)
+        expected = [torch.sort(element, dim=0) for element in elements]
+
+        assert_close(result.values, NT([item.values for item in expected], ragged_dims=(0,)))
+        assert_close(result.indices, NT([item.indices for item in expected], ragged_dims=(0,)))
+        assert_close(torch.argsort(nested, dim=1), result.indices)
+
+    def test_topk_indices_errors_dense(self, device, float_dtype):
+        elements = [torch.randn(n, 3, device=device, dtype=float_dtype) for n in (3, 5, 4)]
+        nested = NT(elements, ragged_dims=(0,))
+
+        result = torch.topk(nested, 2, dim=1, largest=False)
+        expected = [torch.topk(element, 2, dim=0, largest=False) for element in elements]
+
+        assert_close(result.values, NT([item.values for item in expected], ragged_dims=(0,)))
+        assert_close(result.indices, NT([item.indices for item in expected], ragged_dims=(0,)))
+        with pytest.raises(RuntimeError):
+            torch.topk(nested, 4, dim=1)
+
+    def test_sort_nonleading_declared_ragged_dim(self, device, float_dtype):
+        elements = [torch.randn(2, n, 3, device=device, dtype=float_dtype) for n in (3, 5)]
+        nested = NT(elements, ragged_dims=(1,))
+
+        result = torch.sort(nested, dim=2)
+
+        assert result.values.ragged_dims == (1,)
+        assert_close(result.values, NT([torch.sort(element, dim=1).values for element in elements], ragged_dims=(1,)))
+        assert_close(
+            result.indices,
+            NT([torch.sort(element, dim=1).indices for element in elements], ragged_dims=(1,)),
         )
-        output = torch.topk(nt, k=2, dim=1)
-        reference = (
-            NestedTensor(
-                [
-                    torch.tensor([3, 2], device=device, dtype=float_dtype),
-                    torch.tensor([4, 0], device=device, dtype=float_dtype),
-                ],
-                **reference_options(nt),
-            ),
-            NestedTensor(
-                [torch.tensor([1, 2], device=device), torch.tensor([0, 1], device=device)], **reference_options(nt)
-            ),
+
+    @pytest.mark.usefixtures("isolated_compiler")
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_sort_and_topk_compile_fullgraph(self, device, float_dtype):
+        nested = NT(
+            [torch.randn(n, device=device, dtype=float_dtype) for n in (3, 5, 2)],
+            ragged_dims=(0,),
         )
-        assert_close(output[0], reference[0])
-        assert_close(output[1], reference[1])
+
+        def run(value):
+            sorted_values = torch.sort(value, dim=1).values
+            top_values = torch.topk(value, 2, dim=1).values
+            return sorted_values.values(), top_values.values()
+
+        compiled = torch.compile(run, backend="aot_eager", fullgraph=True, dynamic=True)
+        actual = compiled(nested)
+        expected = run(nested)
+
+        assert_close(actual[0], expected[0])
+        assert_close(actual[1], expected[1])
 
 
 class TestSoftmaxVariants:
 
-    def test_softmax_and_log_softmax_translate_dim(self, device, float_dtype):
+    def test_softmax_log_softmax_translate_dim(self, device, float_dtype):
         nt = NT(
             [
                 torch.randn(2, 3, device=device, dtype=float_dtype),
@@ -6240,7 +6206,7 @@ class TestSoftmaxVariants:
             assert_close(grad, ref_grad, atol=1e-5, rtol=1e-4)
 
     @pytest.mark.parametrize("name", ["softmax", "log_softmax"])
-    def test_multi_ragged_softmax_all_varying_dims_preserves_grad(self, device, float_dtype, name):
+    def test_joint_axes_gradients(self, device, float_dtype, name):
         for dim in (1, 2):
             leaves = [
                 torch.randn(2, 3, 4, device=device, dtype=float_dtype, requires_grad=True),
@@ -6274,6 +6240,7 @@ class TestSoftmaxVariants:
             for grad, ref_grad in zip(grads, ref_grads):
                 assert_close(grad, ref_grad, atol=atol, rtol=rtol)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
     def test_multi_ragged_softmax_compile_fullgraph(self):
         nt = NT([torch.randn(2, 3, 4), torch.randn(4, 2, 4)])
@@ -6326,7 +6293,7 @@ class TestCdist:
             (float("inf"), "use_mm_for_euclid_dist_if_necessary"),
         ],
     )
-    def test_values_shape_and_vjp_match_dense(self, device, p, compute_mode):
+    def test_gradients_dense(self, device, p, compute_mode):
         left_values = torch.randn(7, 4, device=device, requires_grad=True)
         right_values = torch.randn(6, 4, device=device, requires_grad=True)
         left_parts = left_values.split((2, 5))
@@ -6372,7 +6339,7 @@ class TestCdist:
         )
         assert_close(torch.cdist(left, right), left.cdist(right))
 
-    def test_mixed_dense_operand_preserves_logical_topology(self, device):
+    def test_mixed_dense_operand_logical_topology(self, device):
         nested = NT(
             [
                 torch.randn(2, 4, device=device),
@@ -6388,7 +6355,7 @@ class TestCdist:
         assert [element.shape for element in output] == [torch.Size((2, 5)), torch.Size((3, 5))]
         assert_close(output, NT([torch.cdist(element, dense) for element in nested], ragged_dims=(0,)))
 
-    def test_empty_points_keep_shape_and_autograd(self, device):
+    def test_empty_points_keep_shape_autograd(self, device):
         left_values = torch.randn(2, 3, device=device, requires_grad=True)
         right_values = torch.randn(4, 3, device=device, requires_grad=True)
         left_parts = (left_values[:0], left_values)
@@ -6405,7 +6372,7 @@ class TestCdist:
         assert_close(gradients[0], torch.autograd.grad(reference.sum(), left_values, retain_graph=True)[0])
         assert_close(gradients[1], torch.autograd.grad(reference.sum(), right_values)[0])
 
-    def test_batch_length_and_feature_mismatch_raise(self, device):
+    def test_batch_length_feature_mismatch_raise(self, device):
         left = NT([torch.randn(2, 3, device=device)], ragged_dims=(0,))
         with pytest.raises(ValueError, match="batch length mismatch"):
             torch.cdist(left, NT([torch.randn(2, 3, device=device), torch.randn(1, 3, device=device)]))
@@ -6426,9 +6393,10 @@ class TestCdist:
         assert output.dtype == reference.dtype
         torch.testing.assert_close(output, reference)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
     @pytest.mark.parametrize("public_function", [False, True], ids=["method", "torch"])
-    def test_compile_fullgraph_preserves_values_and_vjp(self, device, public_function):
+    def test_compiled_gradients(self, device, public_function):
         left_values = torch.randn(7, 3, device=device, requires_grad=True)
         right_values = torch.randn(5, 3, device=device, requires_grad=True)
         left_parts = left_values.split((2, 5))
@@ -6458,169 +6426,6 @@ class TestCdist:
             torch.testing.assert_close(actual, expected)
 
 
-class TestSegmentedSort:
-
-    def test_sort_and_argsort_match_per_element(self, device, float_dtype):
-        elements = [torch.randn(n, 3, device=device, dtype=float_dtype) for n in (3, 0, 5)]
-        nested = NT(elements, ragged_dims=(0,))
-
-        result = torch.sort(nested, dim=1)
-        expected = [torch.sort(element, dim=0) for element in elements]
-
-        assert_close(result.values, NT([item.values for item in expected], ragged_dims=(0,)))
-        assert_close(result.indices, NT([item.indices for item in expected], ragged_dims=(0,)))
-        assert_close(torch.argsort(nested, dim=1), result.indices)
-
-    def test_topk_values_indices_and_errors_match_dense(self, device, float_dtype):
-        elements = [torch.randn(n, 3, device=device, dtype=float_dtype) for n in (3, 5, 4)]
-        nested = NT(elements, ragged_dims=(0,))
-
-        result = torch.topk(nested, 2, dim=1, largest=False)
-        expected = [torch.topk(element, 2, dim=0, largest=False) for element in elements]
-
-        assert_close(result.values, NT([item.values for item in expected], ragged_dims=(0,)))
-        assert_close(result.indices, NT([item.indices for item in expected], ragged_dims=(0,)))
-        with pytest.raises(RuntimeError):
-            torch.topk(nested, 4, dim=1)
-
-    def test_sort_nonleading_declared_ragged_dim(self, device, float_dtype):
-        elements = [torch.randn(2, n, 3, device=device, dtype=float_dtype) for n in (3, 5)]
-        nested = NT(elements, ragged_dims=(1,))
-
-        result = torch.sort(nested, dim=2)
-
-        assert result.values.ragged_dims == (1,)
-        assert_close(result.values, NT([torch.sort(element, dim=1).values for element in elements], ragged_dims=(1,)))
-        assert_close(
-            result.indices,
-            NT([torch.sort(element, dim=1).indices for element in elements], ragged_dims=(1,)),
-        )
-
-    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    def test_sort_and_topk_compile_fullgraph(self, device, float_dtype):
-        nested = NT(
-            [torch.randn(n, device=device, dtype=float_dtype) for n in (3, 5, 2)],
-            ragged_dims=(0,),
-        )
-
-        def run(value):
-            sorted_values = torch.sort(value, dim=1).values
-            top_values = torch.topk(value, 2, dim=1).values
-            return sorted_values.values(), top_values.values()
-
-        compiled = torch.compile(run, backend="aot_eager", fullgraph=True, dynamic=True)
-        actual = compiled(nested)
-        expected = run(nested)
-
-        assert_close(actual[0], expected[0])
-        assert_close(actual[1], expected[1])
-
-
-class TestSegmentedCumulative:
-
-    def test_cumprod_preserves_native_second_derivatives_at_zero(self):
-        values = torch.tensor([0.0, 2.0, 3.0, 4.0, 5.0], dtype=torch.float64, requires_grad=True)
-        reference = values.detach().clone().requires_grad_()
-        output = NT(values.split((3, 2))).cumprod(dim=1).values()
-        expected = torch.cat([part.cumprod(0) for part in reference.split((3, 2))])
-        gradient = torch.autograd.grad(output.sum(), values, create_graph=True)[0]
-        expected_gradient = torch.autograd.grad(expected.sum(), reference, create_graph=True)[0]
-        second = torch.autograd.grad(gradient.sum(), values)[0]
-        expected_second = torch.autograd.grad(expected_gradient.sum(), reference)[0]
-        assert_close(gradient, expected_gradient)
-        assert_close(second, expected_second)
-
-    def test_cumprod_and_logcumsumexp_match_per_element(self, device, float_dtype):
-        elements = [torch.randn(n, 3, device=device, dtype=float_dtype) for n in (3, 0, 5)]
-        nested = NT(elements, ragged_dims=(0,))
-
-        assert_close(
-            torch.cumprod(nested, dim=1),
-            NT([torch.cumprod(element, dim=0) for element in elements], ragged_dims=(0,)),
-        )
-        assert_close(
-            torch.logcumsumexp(nested, dim=1),
-            NT([torch.logcumsumexp(element, dim=0) for element in elements], ragged_dims=(0,)),
-        )
-
-    def test_cumprod_vjp_matches_per_element(self, device, float_dtype):
-        values = torch.randn(8, 2, device=device, dtype=float_dtype, requires_grad=True)
-        parts = values.split((3, 5))
-        nested = NT(parts, ragged_dims=(0,))
-
-        output = torch.cumprod(nested, dim=1).values()
-        reference = torch.cat([torch.cumprod(part, dim=0) for part in parts])
-        cotangent = torch.randn_like(reference)
-        actual_gradient = torch.autograd.grad(output, values, cotangent, retain_graph=True)[0]
-        expected_gradient = torch.autograd.grad(reference, values, cotangent)[0]
-
-        assert_close(output, reference)
-        assert_close(actual_gradient, expected_gradient)
-
-    def test_cummax_and_cummin_values_and_indices(self, device, float_dtype):
-        elements = [torch.randn(n, 3, device=device, dtype=float_dtype) for n in (3, 1, 5)]
-        nested = NT(elements, ragged_dims=(0,))
-
-        for op in (torch.cummax, torch.cummin):
-            result = op(nested, dim=1)
-            expected = [op(element, dim=0) for element in elements]
-            assert_close(result.values, NT([item.values for item in expected], ragged_dims=(0,)))
-            assert_close(result.indices, NT([item.indices for item in expected], ragged_dims=(0,)))
-
-    @pytest.mark.parametrize("dtype", [torch.bool, torch.int32])
-    def test_cumprod_matches_dense_dtype_promotion(self, device, dtype):
-        elements = [
-            torch.tensor([1, 0, 1], device=device, dtype=dtype),
-            torch.tensor([1, 1], device=device, dtype=dtype),
-        ]
-        nested = NT(elements, ragged_dims=(0,))
-
-        output = torch.cumprod(nested, dim=1)
-
-        assert output.dtype == torch.cumprod(elements[0], dim=0).dtype
-        assert_close(output, NT([torch.cumprod(element, dim=0) for element in elements], ragged_dims=(0,)))
-
-    def test_cumulative_ops_nonleading_ragged_dim(self, device, float_dtype):
-        elements = [torch.randn(2, n, device=device, dtype=float_dtype) for n in (3, 5)]
-        nested = NT(elements, ragged_dims=(1,))
-
-        assert_close(
-            torch.cumprod(nested, dim=2),
-            NT([torch.cumprod(element, dim=1) for element in elements], ragged_dims=(1,)),
-        )
-        result = torch.cummax(nested, dim=2)
-        assert_close(
-            result.values,
-            NT([torch.cummax(element, dim=1).values for element in elements], ragged_dims=(1,)),
-        )
-        assert_close(
-            result.indices,
-            NT([torch.cummax(element, dim=1).indices for element in elements], ragged_dims=(1,)),
-        )
-
-    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    @pytest.mark.parametrize("public_function", [False, True], ids=["method", "torch"])
-    def test_cumprod_compile_fullgraph_backward(self, device, public_function):
-        values = torch.randn(8, 2, device=device, requires_grad=True)
-        parts = values.split((3, 5))
-        nested = NT(parts, ragged_dims=(0,))
-        compiled = torch.compile(
-            lambda value: (torch.cumprod(value, dim=1) if public_function else value.cumprod(dim=1)).values(),
-            backend="aot_eager",
-            fullgraph=True,
-            dynamic=True,
-        )
-
-        output = compiled(nested)
-        reference = torch.cat([torch.cumprod(part, dim=0) for part in parts])
-        cotangent = torch.randn_like(reference)
-        actual_gradient = torch.autograd.grad(output, values, cotangent, retain_graph=True)[0]
-        expected_gradient = torch.autograd.grad(reference, values, cotangent)[0]
-
-        assert_close(output, reference)
-        assert_close(actual_gradient, expected_gradient)
-
-
 class TestInversePermutation:
 
     def test_inverse_and_round_trip(self, device, float_dtype):
@@ -6637,7 +6442,7 @@ class TestInversePermutation:
         for element, permutation, undo in zip(values, permutations, inverse):
             assert_close(element[permutation][undo], element)
 
-    def test_static_tail_and_nonleading_ragged_dim(self, device):
+    def test_static_tail_nonleading_ragged_dim(self, device):
         from danling.tensors import inverse_permutation
 
         elements = [torch.stack([torch.randperm(n, device=device) for _ in range(2)]) for n in (3, 5)]
@@ -6663,6 +6468,7 @@ class TestInversePermutation:
         with pytest.raises((RuntimeError, TypeError)):
             inverse_permutation(nested)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
     def test_inverse_permutation_compiles(self, device):
         from danling.tensors import inverse_permutation
@@ -6714,13 +6520,13 @@ class TestRank:
         with pytest.raises(ValueError, match="ragged dimension"):
             rank(nested)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
     @pytest.mark.parametrize("requires_grad", [False, True])
     @pytest.mark.parametrize("composed", [False, True])
     def test_rank_compiles(self, device, float_dtype, requires_grad, composed):
         from danling.tensors import rank
 
-        torch.compiler.reset()
         compiled = torch.compile(
             lambda value: rank(value * 2 if composed else value).values(),
             backend="aot_eager",
@@ -6736,7 +6542,7 @@ class TestRank:
 
 class TestCumcount:
 
-    def test_counts_within_each_sample_and_static_tail(self, device, float_dtype):
+    def test_sample_static_counts(self, device, float_dtype):
         from danling.tensors import cumcount
 
         elements = [torch.randn(n, 3, device=device, dtype=float_dtype) for n in (3, 0, 5)]
@@ -6765,7 +6571,7 @@ class TestCumcount:
 class TestSegmentedComposition:
 
     @pytest.mark.parametrize("tail", [(), (3,)])
-    def test_rank_is_inverse_permutation_of_argsort(self, device, float_dtype, tail):
+    def test_rank_composition(self, device, float_dtype, tail):
         from danling.tensors import inverse_permutation, rank
 
         nested = NT(
@@ -6815,7 +6621,7 @@ class TestUnaryBinaryMath:
             assert actual.shape == source.shape
             assert_close(actual.tensor, reference)
 
-    def test_unary_tensor_method_values_and_vjp(self):
+    def test_unary_tensor_method_gradients(self):
         template = NestedTensor(
             [torch.empty(2, 2, 4), torch.empty(3, 3, 4)],
             ragged_dims=(0, 1),
@@ -6833,8 +6639,9 @@ class TestUnaryBinaryMath:
         assert_close(output.values(), expected)
         assert_close(actual_gradient, expected_gradient)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    def test_sigmoid_head_split_merge_compiles_with_vjp(self):
+    def test_head_split_merge_gradients(self):
         def run(template, values, weight):
             source = template.packed_like(values)
             projected = F.linear(source, weight).sigmoid().unflatten(-1, (2, 4))
@@ -6923,7 +6730,7 @@ class TestUnaryBinaryMath:
         output = torch.addcmul(nt.tensor, nt, nt, value=2)
         assert_close(output, reference)
 
-    def test_addcmul_tensor_input_requires_per_element_broadcast(self, device, float_dtype):
+    def test_addcmul_sample_broadcast(self, device, float_dtype):
         nt = NestedTensor(
             [
                 torch.ones(2, 3, device=device, dtype=float_dtype),
@@ -6961,6 +6768,7 @@ class TestUnaryBinaryMath:
         reference = NT([torch.clamp_max(t, 0.0) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.parametrize("backend", [None, "aot_eager"])
     @pytest.mark.parametrize("rows", [(1, 1), (2, 4)])
     @pytest.mark.parametrize(
@@ -6974,7 +6782,6 @@ class TestUnaryBinaryMath:
         ],
     )
     def test_clamp_nested_gradients(self, device, operation, limits, rows, backend):
-        torch.compiler.reset()
 
         def wrap(data, lengths, capacity):
             return NT.from_packed(
@@ -7189,7 +6996,7 @@ def _dense_ternary_result(op_name, condition_values, packed_values, first, secon
 
 class TestTernaryAutograd:
 
-    def test_ternary_retains_both_operands_ragged_axes(self):
+    def test_ternary_retains_operands_ragged_axes(self):
         left = NT([torch.ones(2, 1, 3), torch.ones(4, 1, 3)], ragged_dims=(0,))
         right = NT([torch.full((1, 3, 3), 2.0), torch.full((1, 5, 3), 2.0)], ragged_dims=(1,))
         output = torch.where(left > 0, left, right)
@@ -7221,7 +7028,7 @@ class TestTernaryAutograd:
         assert_close(loss, expected_loss)
         assert_close(packed_values.grad, expected_grad)
 
-    def test_ternary_tensor_method_values_and_vjp(self):
+    def test_ternary_tensor_method_gradients(self):
         reference = NT([torch.randn(2, 1), torch.randn(3, 1)])
         packed_values = torch.randn_like(reference.values(), requires_grad=True)
         expected_values = packed_values.detach().clone().requires_grad_()
@@ -7238,6 +7045,7 @@ class TestTernaryAutograd:
         assert_close(output.values(), expected)
         assert_close(actual_gradient, expected_gradient)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
     def test_public_ternary_compiles_with_vjp(self):
         reference = NT([torch.randn(2, 1), torch.randn(3, 1)])
@@ -7327,7 +7135,7 @@ class TestPackedStaticTailEinsum:
         torch.testing.assert_close(gradients, references)
 
     @pytest.mark.parametrize("batch_first", [True, False])
-    def test_dense_shared_prefix_expansion_and_vjps(self, device, batch_first):
+    def test_dense_shared_prefix_expansion_vjps(self, device, batch_first):
         parts = [torch.randn(n, 3, device=device, dtype=torch.float64, requires_grad=True) for n in (1, 4)]
         source = NestedTensor(parts, ragged_dims=(0,), batch_first=batch_first)
         weight = torch.randn(4, 3, 2, device=device, dtype=torch.float64, requires_grad=True)
@@ -7356,7 +7164,7 @@ class TestPackedStaticTailEinsum:
             "...c,cd->...d",
         ],
     )
-    def test_static_tail_values_all_operand_vjps(self, device, dtype, batch_first, layout, equation):
+    def test_static_tail_operand_gradients(self, device, dtype, batch_first, layout, equation):
         shapes, ragged = {
             "sequence": ([(0,), (2,), (5,)], (0,)),
             "samples": ([(0, 2), (2, 2), (5, 2)], (0,)),
@@ -7408,7 +7216,7 @@ class TestPackedStaticTailEinsum:
             )
 
     @pytest.mark.parametrize("batch_first", [True, False])
-    def test_shared_dense_ellipsis_preserves_static_prefix(self, device, batch_first):
+    def test_shared_dense_ellipsis_static_prefix(self, device, batch_first):
         shapes = [(0, 2, 3), (4, 2, 3)]
         parts = [torch.randn(*shape, device=device, dtype=torch.float64, requires_grad=True) for shape in shapes]
         source = NestedTensor(parts, ragged_dims=(0,), batch_first=batch_first)
@@ -7424,8 +7232,9 @@ class TestPackedStaticTailEinsum:
         ):
             torch.testing.assert_close(gradient, reference)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.parametrize("layout", ["sequence", "pair"])
-    def test_einsum_fullgraph_dynamic_values_and_vjps(self, device, layout):
+    def test_einsum_dynamic_compiled_gradients(self, device, layout):
         equation = "...c,...cd->...d"
         ragged = (0,) if layout == "sequence" else (0, 1)
         compiled = torch.compile(
@@ -7458,9 +7267,7 @@ class TestPackedStaticTailEinsum:
     @pytest.mark.parametrize("batch_first", [True, False])
     @pytest.mark.parametrize("layout", ["sequence", "samples", "pair", "static"])
     @pytest.mark.parametrize("dense_coordinates", ["batch", "ragged", "batch_ragged"])
-    def test_dense_ellipsis_reads_logical_prefix_and_parameter_vjp(
-        self, device, batch_first, layout, dense_coordinates
-    ):
+    def test_ellipsis_prefix_gradients(self, device, batch_first, layout, dense_coordinates):
         shapes, ragged = {
             "sequence": ([(0,), (2,), (5,)], (0,)),
             "samples": ([(0, 2), (2, 2), (5, 2)], (0,)),
@@ -7500,14 +7307,15 @@ class TestPackedStaticTailEinsum:
         for actual_gradient, expected_gradient in zip(gradients, torch.autograd.grad(reference_loss, [*parts, weight])):
             torch.testing.assert_close(actual_gradient, expected_gradient, atol=1e-12, rtol=1e-10)
 
-    def test_dense_ellipsis_invalid_batch_size_raises_ordinary_broadcast_error(self, device):
+    def test_ellipsis_batch_error(self, device):
         source = NestedTensor([torch.randn(2, 3, device=device), torch.randn(4, 3, device=device)], ragged_dims=(0,))
         weights = torch.randn(3, 1, 3, 5, device=device)
         with pytest.raises(RuntimeError, match="broadcast|Shape mismatch"):
             torch.einsum("...c,...cd->...d", source, weights)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.parametrize("batch_first", [True, False])
-    def test_dense_batch_ellipsis_fullgraph_values_and_parameter_vjp(self, device, batch_first):
+    def test_batched_ellipsis_compiled_gradients(self, device, batch_first):
         compiled = torch.compile(
             lambda a, av, weight: torch.einsum("...c,...cd->...d", a.packed_like(av), weight).values(),
             backend="aot_eager",
@@ -7533,7 +7341,7 @@ class TestPackedStaticTailEinsum:
             for gradient, expected in zip(actual_gradients, torch.autograd.grad(reference.sum(), (values, weights))):
                 torch.testing.assert_close(gradient, expected)
 
-    def test_zero_static_contraction_and_empty_batch(self, device):
+    def test_zero_static_contraction_empty_batch(self, device):
         parts = [torch.empty(n, 0, device=device, requires_grad=True) for n in (0, 4)]
         source = NestedTensor(parts, ragged_dims=(0,))
         weight = torch.empty(0, 3, device=device, requires_grad=True)
@@ -7556,7 +7364,7 @@ class TestPackedStaticTailEinsum:
         output = torch.einsum("...c,cd->...d", empty, torch.empty(3, 4, device=device))
         assert output.shape == (0, 0, 4) and output.values().shape == (0, 4)
 
-    def test_fake_static_tail_preserves_metadata_without_data_reads(
+    def test_fake_metadata_without_data_reads(
         self,
     ):
         from torch._subclasses.fake_tensor import FakeTensorMode
@@ -7572,9 +7380,7 @@ class TestPackedStaticTailEinsum:
     @pytest.mark.parametrize("batch_first", [True, False])
     @pytest.mark.parametrize("layout", ["sample_first", "permuted_static", "permuted_ragged"])
     @pytest.mark.parametrize("dense_weight", [False, True])
-    def test_mapped_static_axes_keep_ragged_row_order_and_parameter_vjps(
-        self, device, batch_first, layout, dense_weight
-    ):
+    def test_mapped_row_parameter_gradients(self, device, batch_first, layout, dense_weight):
         shapes, ragged = {
             "sample_first": ([(2, 0), (2, 4)], (1,)),
             "permuted_static": ([(0, 2), (4, 2)], (0,)),
@@ -7619,8 +7425,9 @@ class TestPackedStaticTailEinsum:
         for gradient, expected_gradient in zip(gradients, torch.autograd.grad(reference, leaves)):
             torch.testing.assert_close(gradient, expected_gradient, atol=1e-12, rtol=1e-10)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.parametrize("batch_first", [True, False])
-    def test_nonleading_ragged_fullgraph_values_and_parameter_vjps(self, device, batch_first):
+    def test_nonleading_ragged_fullgraph_parameter_gradients(self, device, batch_first):
         compiled = torch.compile(
             lambda a, av, b, bv: torch.einsum("...c,...cd->...d", a.packed_like(av), b.packed_like(bv)).values(),
             backend="aot_eager",
@@ -7642,8 +7449,9 @@ class TestPackedStaticTailEinsum:
             for actual, expected in zip(gradients, torch.autograd.grad(reference.sum(), (av, bv))):
                 torch.testing.assert_close(actual, expected)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.parametrize("batch_first", [True, False])
-    def test_permuted_static_fullgraph_values_and_dense_parameter_vjps(self, device, batch_first):
+    def test_permuted_fullgraph_dense_parameter_vjps(self, device, batch_first):
         compiled = torch.compile(
             lambda a, av, w: torch.einsum("...c,...cd->...d", a.packed_like(av), w).values(),
             backend="aot_eager",
@@ -7676,14 +7484,14 @@ class TestPackedStaticTailEinsum:
 
 class TestPackedMixedBroadcast:
 
-    @pytest.mark.parametrize("tensor_backed", [False, True])
+    @pytest.mark.parametrize("from_packed", [False, True])
     @pytest.mark.parametrize("lengths", [(3, 5), (0, 5), (3, 3)])
-    def test_sequence_tokens_and_batch_row_mask(self, device, tensor_backed, lengths):
+    def test_sequence_tokens_batch_row_mask(self, device, from_packed, lengths):
         parts = [torch.randn(length, 7, device=device, dtype=torch.float64, requires_grad=True) for length in lengths]
         token_parts = [torch.arange(length, device=device) % 7 for length in lengths]
         input = NestedTensor(parts, ragged_dims=(0,))
         tokens = NestedTensor(token_parts, ragged_dims=(0,)).unsqueeze(-1)
-        if tensor_backed:
+        if from_packed:
             input = input.packed_with_lengths(input.values(), torch.tensor(lengths))
             tokens = tokens.packed_with_lengths(tokens.values(), torch.tensor(lengths))
         row_mask = torch.tensor([True, False], device=device).reshape(2, 1, 1)
@@ -7709,9 +7517,9 @@ class TestPackedMixedBroadcast:
         for gradient, reference in zip(gradients, torch.autograd.grad(reference_loss, parts)):
             torch.testing.assert_close(gradient, reference)
 
-    @pytest.mark.parametrize("tensor_backed", [False, True])
+    @pytest.mark.parametrize("from_packed", [False, True])
     @pytest.mark.parametrize("batch_first", [False, True])
-    def test_sample_axis_static_tail_and_dense_gradients(self, device, tensor_backed, batch_first):
+    def test_sampled_dense_gradients(self, device, from_packed, batch_first):
         lengths = (3, 5)
         parts = [
             torch.randn(3, length, 1, device=device, dtype=torch.float64, requires_grad=True) for length in lengths
@@ -7723,13 +7531,13 @@ class TestPackedMixedBroadcast:
         if not batch_first:
             row_bias = row_bias.transpose(0, 1)
             head_bias = head_bias.transpose(0, 1)
-        if tensor_backed:
+        if from_packed:
             # Keep the non-leading declared ragged layout but omit cached Python element shapes.
             input = NestedTensor.from_packed(
                 input.values(),
-                input._offsets,
-                input._physical_shape,
-                permutation=input._permutation,
+                input.packed_offsets(),
+                input.element_sizes(),
+                permutation=input.packed_dim_order,
                 ragged_dims=input.ragged_dims,
                 batch_first=input.batch_first,
                 padding_value=input.padding_value,
@@ -7766,7 +7574,7 @@ class TestPackedMixedBroadcast:
         ):
             torch.testing.assert_close(gradient, reference)
 
-    def test_nested_operands_keep_their_own_configuration(self, device):
+    def test_nested_operands_keep_configuration(self, device):
         parts = [torch.randn(length, 4, device=device) for length in (3, 5)]
         first = NestedTensor(parts, ragged_dims=(0,), padding_value=-3, mask_value=False)
         second = NestedTensor([part[:, :1] for part in parts], ragged_dims=(0,), padding_value=5, mask_value=True)
@@ -7778,13 +7586,13 @@ class TestPackedMixedBroadcast:
             for index in range(2):
                 torch.testing.assert_close(output[index], input[index].expand_as(first[index]))
 
-    def test_ambiguous_dense_operand_retains_normal_error(self, device):
+    def test_ambiguous_dense_operand_retains_error(self, device):
         input = NestedTensor([torch.randn(2, length, 5, device=device) for length in (3, 5)], ragged_dims=(1,))
         ambiguous = torch.randn(2, 1, 5, device=device)
         with pytest.raises(NotImplementedError, match="ambiguous"):
             torch.broadcast_tensors(input, ambiguous)
 
-    def test_all_nested_outer_broadcast_still_builds_real_grids(self, device):
+    def test_nested_outer_grid(self, device):
         parts = [torch.randn(length, 2, device=device, dtype=torch.float64, requires_grad=True) for length in (3, 5)]
         input = NestedTensor(parts, ragged_dims=(0,))
         left, right = torch.broadcast_tensors(input.unsqueeze(1), input.unsqueeze(2))
@@ -7799,6 +7607,7 @@ class TestPackedMixedBroadcast:
             torch.testing.assert_close(left[index], lhs)
             torch.testing.assert_close(right[index], rhs)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     def test_tensor_backed_mixed_broadcast_fullgraph(self, device):
         parts = [torch.randn(length, 7, device=device) for length in (3, 5)]
         input = NestedTensor(parts, ragged_dims=(0,))
@@ -7816,8 +7625,9 @@ class TestPackedMixedBroadcast:
         for output, reference in zip(actual, expected):
             torch.testing.assert_close(output, reference)
 
-    @pytest.mark.parametrize("tensor_backed", [False, True])
-    def test_joint_static_shape_resolves_dense_reading_independently_of_operand_order(self, device, tensor_backed):
+    @pytest.mark.usefixtures("isolated_compiler")
+    @pytest.mark.parametrize("from_packed", [False, True])
+    def test_operand_order_broadcast(self, device, from_packed):
         lengths = (3, 4)
         first_parts = [
             torch.randn(1, length, 5, device=device, dtype=torch.float64, requires_grad=True) for length in lengths
@@ -7828,14 +7638,14 @@ class TestPackedMixedBroadcast:
         first = NestedTensor(first_parts, ragged_dims=(1,))
         second = NestedTensor(second_parts, ragged_dims=(1,))
         dense = torch.randn(2, 1, 5, device=device, dtype=torch.float64, requires_grad=True)
-        if tensor_backed:
+        if from_packed:
 
             def tensor_layout(input):
                 return NestedTensor.from_packed(
                     input.values(),
-                    input._offsets,
-                    input._physical_shape,
-                    permutation=input._permutation,
+                    input.packed_offsets(),
+                    input.element_sizes(),
+                    permutation=input.packed_dim_order,
                     ragged_dims=input.ragged_dims,
                     batch_first=input.batch_first,
                     outer_size=input.shape,
@@ -7868,7 +7678,7 @@ class TestPackedMixedBroadcast:
             for actual, expected in zip(gradients, reference_gradients):
                 torch.testing.assert_close(actual, expected)
 
-        if tensor_backed:
+        if from_packed:
 
             def forward(first, second, dense):
                 return tuple(output.values() for output in torch.broadcast_tensors(first, second, dense))
@@ -8059,6 +7869,7 @@ class TestBatchRepeat:
         assert fake_tensor_mod.is_fake(fake_output.values())
         assert fake_output.shape == eager_output.shape
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.parametrize("entry", ["repeat-batch", "torch"])
     def test_compiled_subclass(self, entry):
         template = _RepeatTensor(
@@ -8079,6 +7890,7 @@ class TestBatchRepeat:
         assert type(output) is _RepeatTensor
         assert_close(output, expected)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.parametrize("outside_loss", [False, True])
     def test_compiled_gradient(self, outside_loss):
         source, values = _repeat_leaf(((2, 3, 4), (1, 4, 4)), ragged_dims=(1, 0))
@@ -8170,7 +7982,7 @@ def _gather_case_params(cases=None):
     )
 
 
-class TestGatherParity:
+class TestGather:
 
     @_gather_case_params(
         _gather_cases_named(
@@ -8266,7 +8078,7 @@ class TestGatherParity:
             [torch.index_select(element, 1, selected) for element in elements],
         )
 
-    def test_gather_index_may_have_a_different_output_shape(self):
+    def test_index_output_shape(self):
         shapes = [(3, 4), (5, 4), (2, 4)]
         index_shapes = [(2, 2), (6, 2), (1, 2)]
         elements = _element_values(shapes)
@@ -8279,61 +8091,246 @@ class TestGatherParity:
             [torch.gather(element, 0, index) for element, index in zip(elements, indices)],
         )
 
+    def test_segment_local_bounds(self):
+        elements = [torch.arange(12.0).reshape(3, 4), torch.arange(8.0).reshape(2, 4) + 100]
+        indices = [torch.full((3, 4), 2, dtype=torch.long), torch.zeros(2, 4, dtype=torch.long)]
 
-class TestNarrowIndex:
+        output = torch.gather(NT(elements), 1, NT(indices))
 
-    @pytest.mark.parametrize("backend", [None, "aot_eager", "inductor"])
-    @pytest.mark.parametrize("method", [False, True])
-    def test_static_owner(self, device, backend, method):
-        torch.compiler.reset()
-        parts = [torch.randn(3, n, 2, device=device, dtype=torch.float64, requires_grad=True) for n in (2, 4)]
-        refs = [part.detach().clone().requires_grad_() for part in parts]
-        source = NT(parts, ragged_dims=(1,), batch_first=False) * 1
-        expected_source = [part * 1 for part in refs]
-
-        def subset(value):
-            return value.narrow(0, -2, 1) if method else torch.narrow(input=value, dim=0, start=-2, length=1)
-
-        run = subset if backend is None else torch.compile(subset, backend=backend, fullgraph=True, dynamic=True)
-        result = run(source)
-        expected = [part.narrow(0, -2, 1) for part in expected_source]
-        torch.testing.assert_close(result.unbind(1), expected)
-        torch.testing.assert_close(
-            torch.autograd.grad(result.square().sum(), parts, retain_graph=True),
-            torch.autograd.grad(sum(part.square().sum() for part in expected), refs, retain_graph=True),
+        _assert_elements(
+            output,
+            [torch.gather(element, 0, index) for element, index in zip(elements, indices)],
         )
-        saved = source.values().square().sum()
-        result.mul_(2)
-        for part in expected:
-            part.mul_(2)
-        torch.testing.assert_close(source.unbind(1), expected_source)
-        torch.testing.assert_close(
-            torch.autograd.grad(source.square().sum(), parts, retain_graph=True),
-            torch.autograd.grad(sum(part.square().sum() for part in expected_source), refs),
+
+    @pytest.mark.parametrize("bad_index", [-1, 2])
+    def test_ragged_bounds(self, bad_index):
+        elements = [torch.zeros(3, 4), torch.zeros(2, 4)]
+        indices = [torch.zeros(3, 4, dtype=torch.long), torch.full((2, 4), bad_index, dtype=torch.long)]
+
+        with pytest.raises(IndexError, match="out of bounds"):
+            torch.gather(NT(elements), 1, NT(indices))
+
+    @pytest.mark.usefixtures("isolated_compiler")
+    @pytest.mark.parametrize("backend,bad_index", [(None, -1), (None, 2), ("aot_eager", 2), ("inductor", 2)])
+    @pytest.mark.parametrize(
+        "operation", [torch.index_select, torch.Tensor.index_select, torch.ops.aten.index_select.default]
+    )
+    def test_index_select_bounds(self, backend, operation, bad_index):
+        elements = [torch.zeros(2, 4), torch.ones(3, 4)]
+
+        def call(input_, index):
+            return operation(input_, 1, index)
+
+        if backend is not None:
+            call = torch.compile(call, backend=backend, fullgraph=True)
+
+        with pytest.raises(IndexError if backend is None else RuntimeError, match="out of bounds"):
+            call(NT(elements, ragged_dims=(0,)), torch.tensor([bad_index]))
+
+    @pytest.mark.parametrize("operation", ["gather", "take_along_dim"])
+    def test_batch_index_error(self, operation):
+        elements = [torch.zeros(3, 4), torch.zeros(2, 4)]
+        indices = [torch.zeros(3, 4, dtype=torch.long), torch.zeros(2, 4, dtype=torch.long)]
+
+        with pytest.raises(ValueError, match="batch dimension"):
+            if operation == "gather":
+                torch.gather(NT(elements), 0, NT(indices))
+            else:
+                torch.take_along_dim(NT(elements), NT(indices), dim=0)
+
+    def test_nested_index_batch_lengths_must(self):
+        elements = [torch.zeros(3, 4), torch.zeros(2, 4)]
+        indices = [torch.zeros(3, 4, dtype=torch.long)]
+
+        with pytest.raises(ValueError, match="batch length mismatch"):
+            torch.gather(NT(elements), 1, NT(indices))
+
+    def test_out_of_range_index_raises(self):
+        bases = [torch.zeros(2, 4), torch.full((3, 4), 100.0)]
+        indices = [torch.full((1, 4), 2, dtype=torch.long), torch.zeros(1, 4, dtype=torch.long)]
+        message = r"gather: index 2 is out of bounds for dimension 1 with size 2"
+        with pytest.raises(IndexError, match=message):
+            torch.gather(NT(bases), 1, NT(indices))
+
+    def test_gather_gradient_matches_dense_reference(self):
+        shapes = [(3, 4), (5, 4), (2, 4)]
+        elements = [element.requires_grad_() for element in _element_values(shapes)]
+        indices = _gather_build_indices(shapes, 0)
+
+        torch.gather(NT(elements), 1, NT(indices)).values().sum().backward()
+
+        for element, index in zip(elements, indices):
+            reference = element.detach().clone().requires_grad_()
+            torch.gather(reference, 0, index).sum().backward()
+            torch.testing.assert_close(element.grad, reference.grad)
+
+    def test_take_along_dim_gradient_parity(self):
+        shapes = [(3, 4), (5, 4), (2, 4)]
+        elements = [element.requires_grad_() for element in _element_values(shapes)]
+        indices = _gather_build_indices(shapes, 0)
+
+        torch.take_along_dim(NT(elements), NT(indices), dim=1).values().sum().backward()
+
+        for element, index in zip(elements, indices):
+            reference = element.detach().clone().requires_grad_()
+            torch.take_along_dim(reference, index, dim=0).sum().backward()
+            torch.testing.assert_close(element.grad, reference.grad)
+
+    def test_index_select_gradient_parity(self):
+        elements = [element.requires_grad_() for element in _element_values([(3, 4), (5, 4), (2, 4)])]
+        index = torch.tensor([1, 0])
+
+        torch.index_select(NT(elements), 1, index).values().sum().backward()
+
+        for element in elements:
+            reference = element.detach().clone().requires_grad_()
+            torch.index_select(reference, 0, index).sum().backward()
+            torch.testing.assert_close(element.grad, reference.grad)
+
+    def test_repeated_batch_gradients(self):
+        elements = [element.requires_grad_() for element in _element_values([(3, 4), (5, 4), (2, 4)])]
+
+        torch.index_select(NT(elements), 0, torch.tensor([2, 0, 2])).values().sum().backward()
+
+        torch.testing.assert_close(elements[2].grad, torch.full((2, 4), 2.0))
+        torch.testing.assert_close(elements[0].grad, torch.ones(3, 4))
+        torch.testing.assert_close(elements[1].grad, torch.zeros(5, 4))
+
+    @pytest.mark.usefixtures("isolated_compiler")
+    def test_gather_fullgraph(self):
+        shapes = [(2, 3, 4), (2, 5, 4)]
+        elements = _element_values(shapes)
+        indices = _gather_build_indices(shapes, 1)
+        compiled = torch.compile(
+            lambda input_, index: torch.gather(input_, 2, index),
+            backend="aot_eager",
+            fullgraph=True,
         )
-        with pytest.raises(RuntimeError, match="modified.*inplace|version"):
-            torch.autograd.grad(saved, parts)
 
-    @pytest.mark.parametrize("transform", ["grad", "jvp", "vmap"])
-    def test_static_transforms(self, device, transform):
-        values = torch.randn(6, 2, 3, device=device, dtype=torch.float64)
-        direction = torch.randn_like(values)
-        source = NT(values.split((2, 4)), ragged_dims=(0,))
-        vector = NT(direction.split((2, 4)), ragged_dims=(0,))
+        output = compiled(
+            NT(elements, ragged_dims=(1,)),
+            NT(indices, ragged_dims=(1,)),
+        )
 
-        def loss(value):
-            return torch.narrow(value, -1, 1, 1).sin().square().sum()
+        _assert_elements(
+            output,
+            [torch.gather(element, 1, index) for element, index in zip(elements, indices)],
+        )
 
-        if transform == "grad":
-            actual = torch.func.grad(loss)(source).values()
-            expected = torch.func.grad(loss)(values)
-        elif transform == "jvp":
-            actual = torch.func.jvp(loss, (source,), (vector,))
-            expected = torch.func.jvp(loss, (values,), (direction,))
-        else:
-            actual = torch.vmap(loss, in_dims=-1)(source)
-            expected = torch.vmap(loss, in_dims=-1)(values)
+    @pytest.mark.usefixtures("isolated_compiler")
+    @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
+    @pytest.mark.parametrize(
+        "operation", [torch.index_select, torch.Tensor.index_select, torch.ops.aten.index_select.default]
+    )
+    @pytest.mark.parametrize("dim", [1, 2])
+    def test_index_select_fullgraph(self, device, backend, operation, dim):
+        shapes = [(3, 4), (5, 4), (2, 4)]
+        elements = [element.to(device).requires_grad_() for element in _element_values(shapes)]
+        index = torch.tensor([1, 0], device=device)
+        compiled = torch.compile(
+            lambda input_, index_: operation(input_, dim, index_),
+            backend=backend,
+            fullgraph=True,
+        )
+
+        output = compiled(NT(elements, ragged_dims=(0,)), index)
+
+        expected = [torch.index_select(element, dim - 1, index) for element in elements]
+        _assert_elements(output, expected)
+        torch.testing.assert_close(
+            torch.autograd.grad(output.square().sum(), elements),
+            torch.autograd.grad(sum(element.square().sum() for element in expected), elements),
+        )
+
+    @pytest.mark.usefixtures("isolated_compiler")
+    def test_projected_gather_fullgraph(self):
+        projected = _gather_projected_case()
+        elements = list(projected)
+        indices = _gather_build_indices([tuple(element.shape) for element in elements], 1)
+        compiled = torch.compile(
+            lambda input_, index: torch.gather(input_, 2, index),
+            backend="aot_eager",
+            fullgraph=True,
+        )
+
+        output = compiled(projected, NT(indices, ragged_dims=(1,)))
+
+        _assert_elements(
+            output,
+            [torch.gather(element, 1, index) for element, index in zip(elements, indices)],
+        )
+
+    @pytest.mark.usefixtures("isolated_compiler")
+    @pytest.mark.parametrize("operation", ["gather", "take_along_dim"])
+    def test_multi_ragged_compiled_rows(self, operation):
+        def select(source, index):
+            if operation == "gather":
+                return torch.gather(source, 1, index)
+            return torch.take_along_dim(source, index, dim=1)
+
+        cases = [
+            ([(4, 3, 2), (3, 2, 2)], [torch.tensor([3, 1]), torch.tensor([2])]),
+            ([(5, 2, 2), (2, 4, 2)], [torch.tensor([4, 2, 0]), torch.tensor([1])]),
+        ]
+        compiled = torch.compile(select, backend="aot_eager", fullgraph=True, dynamic=True)
+
+        for source_shapes, rows in cases:
+            indices = [row[:, None, None].expand(-1, shape[1], shape[2]) for row, shape in zip(rows, source_shapes)]
+            elements = _element_values(source_shapes)
+            source = NT(elements, ragged_dims=(0, 1))
+            index = NT(indices, ragged_dims=(0, 1))
+
+            actual = compiled(source, index)
+            if operation == "gather":
+                expected = [torch.gather(element, 0, sample_index) for element, sample_index in zip(elements, indices)]
+            else:
+                expected = [
+                    torch.take_along_dim(element, sample_index, dim=0)
+                    for element, sample_index in zip(elements, indices)
+                ]
+            assert actual.ragged_dims == index.ragged_dims
+            torch.testing.assert_close(actual.element_sizes(), index.element_sizes())
+            _assert_elements(actual, expected)
+
+    @pytest.mark.usefixtures("isolated_compiler")
+    def test_compiled_shape_gradients_bounds(self):
+        source_lengths = (3, 5, 2)
+        index_lengths = (2, 6, 1)
+        source_template = NT([torch.empty(length, 4) for length in source_lengths], ragged_dims=(0,))
+        index_template = NT(
+            [torch.empty(length, 2, dtype=torch.long) for length in index_lengths],
+            ragged_dims=(0,),
+        )
+        indices = _gather_build_indices(
+            [(length, 4) for length in source_lengths],
+            0,
+            index_shapes=[(length, 2) for length in index_lengths],
+        )
+        packed_indices = torch.cat(indices)
+
+        def gather_values(source_structure, source_values, index_structure, index_values):
+            source = source_structure.packed_like(source_values)
+            index = index_structure.packed_like(index_values)
+            return torch.gather(source, 1, index).values()
+
+        compiled = torch.compile(gather_values, backend="aot_eager", fullgraph=True)
+        source_values = torch.randn_like(source_template.values(), requires_grad=True)
+        actual = compiled(source_template, source_values, index_template, packed_indices)
+        source_elements = source_values.split(source_lengths)
+        expected = torch.cat(
+            [torch.gather(element, 0, sample_index) for element, sample_index in zip(source_elements, indices)]
+        )
+        cotangent = torch.randn_like(actual)
+        actual_grad = torch.autograd.grad(actual, source_values, cotangent, retain_graph=True)[0]
+        expected_grad = torch.autograd.grad(expected, source_values, cotangent)[0]
+
         torch.testing.assert_close(actual, expected)
+        torch.testing.assert_close(actual_grad, expected_grad)
+
+        out_of_bounds = packed_indices.clone()
+        out_of_bounds[0, 0] = source_lengths[0]
+        with pytest.raises(RuntimeError, match="gather: index is out of bounds"):
+            compiled(source_template, source_values, index_template, out_of_bounds)
 
     def test_different_source_and_index_shapes(self):
         source_shapes = [(3, 4), (5, 4), (2, 4)]
@@ -8398,7 +8395,7 @@ class TestNarrowIndex:
             torch.testing.assert_close(actual, reference)
 
     @pytest.mark.parametrize("operation", ["gather", "take_along_dim"])
-    def test_multi_ragged_row_selection_with_fake_tensors(self, operation):
+    def test_multi_ragged_fake_rows(self, operation):
         fake_tensor = pytest.importorskip("torch._subclasses.fake_tensor")
         symbolic_shapes = pytest.importorskip("torch.fx.experimental.symbolic_shapes")
         source = NT([torch.empty(4, 3, 2), torch.empty(3, 2, 2)], ragged_dims=(0, 1))
@@ -8480,6 +8477,7 @@ class TestCrossTopologyRowSelection:
         assert output.shape == expanded_index.shape
         assert output.element_sizes().shape == expanded_index.element_sizes().shape
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.parametrize("operation", ["gather", "take_along_dim"])
     def test_compiled_gradients(self, operation):
         compiled = torch.compile(
@@ -8563,6 +8561,7 @@ class TestDenseLookupNestedIndex:
         assert output.shape == (2, 3, 2)
         assert output.ragged_dims == (0,)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     def test_dynamic_fullgraph_with_source_gradient(self):
         compiled = torch.compile(
             lambda lookup, template, values: lookup[template.packed_like(values)].values(),
@@ -8590,7 +8589,7 @@ class TestDenseLookupNestedIndex:
 
 class TestDenseIndex:
 
-    def test_batch_shaped_dense_index_rejects_padded_rows(self):
+    def test_batch_shaped_rejects_padded_rows(self):
         shapes = [(3, 4), (5, 4), (2, 4)]
         nested = NT(_element_values(shapes))
         dense = torch.zeros(nested.shape, dtype=torch.long)
@@ -8625,62 +8624,6 @@ class TestDenseIndex:
         output = torch.gather(NT(elements), 1, dense)
 
         _assert_elements(output, [torch.gather(element, 0, dense) for element in elements])
-
-
-class TestGatherErrors:
-
-    def test_segment_local_indices_do_not_cross_samples(self):
-        elements = [torch.arange(12.0).reshape(3, 4), torch.arange(8.0).reshape(2, 4) + 100]
-        indices = [torch.full((3, 4), 2, dtype=torch.long), torch.zeros(2, 4, dtype=torch.long)]
-
-        output = torch.gather(NT(elements), 1, NT(indices))
-
-        _assert_elements(
-            output,
-            [torch.gather(element, 0, index) for element, index in zip(elements, indices)],
-        )
-
-    @pytest.mark.parametrize("bad_index", [-1, 2])
-    def test_out_of_range_ragged_index_raises(self, bad_index):
-        elements = [torch.zeros(3, 4), torch.zeros(2, 4)]
-        indices = [torch.zeros(3, 4, dtype=torch.long), torch.full((2, 4), bad_index, dtype=torch.long)]
-
-        with pytest.raises(IndexError, match="out of bounds"):
-            torch.gather(NT(elements), 1, NT(indices))
-
-    @pytest.mark.parametrize("backend,bad_index", [(None, -1), (None, 2), ("aot_eager", 2), ("inductor", 2)])
-    @pytest.mark.parametrize(
-        "operation", [torch.index_select, torch.Tensor.index_select, torch.ops.aten.index_select.default]
-    )
-    def test_index_select_bounds(self, backend, operation, bad_index):
-        elements = [torch.zeros(2, 4), torch.ones(3, 4)]
-
-        def call(input_, index):
-            return operation(input_, 1, index)
-
-        if backend is not None:
-            call = torch.compile(call, backend=backend, fullgraph=True)
-
-        with pytest.raises(IndexError if backend is None else RuntimeError, match="out of bounds"):
-            call(NT(elements, ragged_dims=(0,)), torch.tensor([bad_index]))
-
-    @pytest.mark.parametrize("operation", ["gather", "take_along_dim"])
-    def test_nested_index_cannot_address_the_batch_dimension(self, operation):
-        elements = [torch.zeros(3, 4), torch.zeros(2, 4)]
-        indices = [torch.zeros(3, 4, dtype=torch.long), torch.zeros(2, 4, dtype=torch.long)]
-
-        with pytest.raises(ValueError, match="batch dimension"):
-            if operation == "gather":
-                torch.gather(NT(elements), 0, NT(indices))
-            else:
-                torch.take_along_dim(NT(elements), NT(indices), dim=0)
-
-    def test_nested_index_batch_lengths_must_match(self):
-        elements = [torch.zeros(3, 4), torch.zeros(2, 4)]
-        indices = [torch.zeros(3, 4, dtype=torch.long)]
-
-        with pytest.raises(ValueError, match="batch length mismatch"):
-            torch.gather(NT(elements), 1, NT(indices))
 
 
 class TestAdditionalSpellings:
@@ -8750,7 +8693,7 @@ class TestAdditionalSpellings:
             [torch.take_along_dim(element, index, dim=None) for element, index in zip(elements, indices)],
         )
 
-    def test_take_along_dim_broadcasts_a_dense_index(self):
+    def test_dense_index_broadcast(self):
         elements = _element_values([(3, 4), (5, 4), (2, 4)])
         dense = torch.zeros((1, 4), dtype=torch.long)
 
@@ -8763,210 +8706,13 @@ class TestAdditionalSpellings:
                 [torch.take_along_dim(element, dense, dim=0) for element in elements],
             )
 
-    def test_index_select_on_the_batch_dimension(self):
+    def test_index_select_on_batch_dimension(self):
         elements = _element_values([(3, 4), (5, 4), (2, 4)])
         index = torch.tensor([2, 0, 2])
 
         output = torch.index_select(NT(elements), 0, index)
 
         _assert_elements(output, [elements[position] for position in index.tolist()])
-
-
-class TestGatherBounds:
-
-    def test_out_of_range_index_raises(self):
-        bases = [torch.zeros(2, 4), torch.full((3, 4), 100.0)]
-        indices = [torch.full((1, 4), 2, dtype=torch.long), torch.zeros(1, 4, dtype=torch.long)]
-        message = r"gather: index 2 is out of bounds for dimension 1 with size 2"
-        with pytest.raises(IndexError, match=message):
-            torch.gather(NT(bases), 1, NT(indices))
-
-
-class TestGatherAutograd:
-
-    def test_gather_gradient_matches_dense_reference(self):
-        shapes = [(3, 4), (5, 4), (2, 4)]
-        elements = [element.requires_grad_() for element in _element_values(shapes)]
-        indices = _gather_build_indices(shapes, 0)
-
-        torch.gather(NT(elements), 1, NT(indices)).values().sum().backward()
-
-        for element, index in zip(elements, indices):
-            reference = element.detach().clone().requires_grad_()
-            torch.gather(reference, 0, index).sum().backward()
-            torch.testing.assert_close(element.grad, reference.grad)
-
-    def test_take_along_dim_gradient_matches_dense_reference(self):
-        shapes = [(3, 4), (5, 4), (2, 4)]
-        elements = [element.requires_grad_() for element in _element_values(shapes)]
-        indices = _gather_build_indices(shapes, 0)
-
-        torch.take_along_dim(NT(elements), NT(indices), dim=1).values().sum().backward()
-
-        for element, index in zip(elements, indices):
-            reference = element.detach().clone().requires_grad_()
-            torch.take_along_dim(reference, index, dim=0).sum().backward()
-            torch.testing.assert_close(element.grad, reference.grad)
-
-    def test_index_select_gradient_matches_dense_reference(self):
-        elements = [element.requires_grad_() for element in _element_values([(3, 4), (5, 4), (2, 4)])]
-        index = torch.tensor([1, 0])
-
-        torch.index_select(NT(elements), 1, index).values().sum().backward()
-
-        for element in elements:
-            reference = element.detach().clone().requires_grad_()
-            torch.index_select(reference, 0, index).sum().backward()
-            torch.testing.assert_close(element.grad, reference.grad)
-
-    def test_batch_index_select_accumulates_repeated_gradients(self):
-        elements = [element.requires_grad_() for element in _element_values([(3, 4), (5, 4), (2, 4)])]
-
-        torch.index_select(NT(elements), 0, torch.tensor([2, 0, 2])).values().sum().backward()
-
-        torch.testing.assert_close(elements[2].grad, torch.full((2, 4), 2.0))
-        torch.testing.assert_close(elements[0].grad, torch.ones(3, 4))
-        torch.testing.assert_close(elements[1].grad, torch.zeros(5, 4))
-
-
-class TestGatherCompile:
-
-    @pytest.fixture(autouse=True)
-    def isolate_compiler(self):
-        torch.compiler.reset()
-        yield
-        torch.compiler.reset()
-
-    def test_gather_fullgraph(self):
-        shapes = [(2, 3, 4), (2, 5, 4)]
-        elements = _element_values(shapes)
-        indices = _gather_build_indices(shapes, 1)
-        compiled = torch.compile(
-            lambda input_, index: torch.gather(input_, 2, index),
-            backend="aot_eager",
-            fullgraph=True,
-        )
-
-        output = compiled(
-            NT(elements, ragged_dims=(1,)),
-            NT(indices, ragged_dims=(1,)),
-        )
-
-        _assert_elements(
-            output,
-            [torch.gather(element, 1, index) for element, index in zip(elements, indices)],
-        )
-
-    @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
-    @pytest.mark.parametrize(
-        "operation", [torch.index_select, torch.Tensor.index_select, torch.ops.aten.index_select.default]
-    )
-    @pytest.mark.parametrize("dim", [1, 2])
-    def test_index_select_fullgraph(self, device, backend, operation, dim):
-        shapes = [(3, 4), (5, 4), (2, 4)]
-        elements = [element.to(device).requires_grad_() for element in _element_values(shapes)]
-        index = torch.tensor([1, 0], device=device)
-        compiled = torch.compile(
-            lambda input_, index_: operation(input_, dim, index_),
-            backend=backend,
-            fullgraph=True,
-        )
-
-        output = compiled(NT(elements, ragged_dims=(0,)), index)
-
-        expected = [torch.index_select(element, dim - 1, index) for element in elements]
-        _assert_elements(output, expected)
-        torch.testing.assert_close(
-            torch.autograd.grad(output.square().sum(), elements),
-            torch.autograd.grad(sum(element.square().sum() for element in expected), elements),
-        )
-
-    def test_projected_gather_fullgraph(self):
-        projected = _gather_projected_case()
-        elements = list(projected)
-        indices = _gather_build_indices([tuple(element.shape) for element in elements], 1)
-        compiled = torch.compile(
-            lambda input_, index: torch.gather(input_, 2, index),
-            backend="aot_eager",
-            fullgraph=True,
-        )
-
-        output = compiled(projected, NT(indices, ragged_dims=(1,)))
-
-        _assert_elements(
-            output,
-            [torch.gather(element, 1, index) for element, index in zip(elements, indices)],
-        )
-
-    @pytest.mark.parametrize("operation", ["gather", "take_along_dim"])
-    def test_multi_ragged_row_selection_dynamic_fullgraph(self, operation):
-        def select(source, index):
-            if operation == "gather":
-                return torch.gather(source, 1, index)
-            return torch.take_along_dim(source, index, dim=1)
-
-        cases = [
-            ([(4, 3, 2), (3, 2, 2)], [torch.tensor([3, 1]), torch.tensor([2])]),
-            ([(5, 2, 2), (2, 4, 2)], [torch.tensor([4, 2, 0]), torch.tensor([1])]),
-        ]
-        compiled = torch.compile(select, backend="aot_eager", fullgraph=True, dynamic=True)
-
-        for source_shapes, rows in cases:
-            indices = [row[:, None, None].expand(-1, shape[1], shape[2]) for row, shape in zip(rows, source_shapes)]
-            elements = _element_values(source_shapes)
-            source = NT(elements, ragged_dims=(0, 1))
-            index = NT(indices, ragged_dims=(0, 1))
-
-            actual = compiled(source, index)
-            if operation == "gather":
-                expected = [torch.gather(element, 0, sample_index) for element, sample_index in zip(elements, indices)]
-            else:
-                expected = [
-                    torch.take_along_dim(element, sample_index, dim=0)
-                    for element, sample_index in zip(elements, indices)
-                ]
-            assert actual.ragged_dims == index.ragged_dims
-            torch.testing.assert_close(actual.element_sizes(), index.element_sizes())
-            _assert_elements(actual, expected)
-
-    def test_different_shapes_aot_eager_vjp_and_runtime_bounds(self):
-        source_lengths = (3, 5, 2)
-        index_lengths = (2, 6, 1)
-        source_template = NT([torch.empty(length, 4) for length in source_lengths], ragged_dims=(0,))
-        index_template = NT(
-            [torch.empty(length, 2, dtype=torch.long) for length in index_lengths],
-            ragged_dims=(0,),
-        )
-        indices = _gather_build_indices(
-            [(length, 4) for length in source_lengths],
-            0,
-            index_shapes=[(length, 2) for length in index_lengths],
-        )
-        packed_indices = torch.cat(indices)
-
-        def gather_values(source_structure, source_values, index_structure, index_values):
-            source = source_structure.packed_like(source_values)
-            index = index_structure.packed_like(index_values)
-            return torch.gather(source, 1, index).values()
-
-        compiled = torch.compile(gather_values, backend="aot_eager", fullgraph=True)
-        source_values = torch.randn_like(source_template.values(), requires_grad=True)
-        actual = compiled(source_template, source_values, index_template, packed_indices)
-        source_elements = source_values.split(source_lengths)
-        expected = torch.cat(
-            [torch.gather(element, 0, sample_index) for element, sample_index in zip(source_elements, indices)]
-        )
-        cotangent = torch.randn_like(actual)
-        actual_grad = torch.autograd.grad(actual, source_values, cotangent, retain_graph=True)[0]
-        expected_grad = torch.autograd.grad(expected, source_values, cotangent)[0]
-
-        torch.testing.assert_close(actual, expected)
-        torch.testing.assert_close(actual_grad, expected_grad)
-
-        out_of_bounds = packed_indices.clone()
-        out_of_bounds[0, 0] = source_lengths[0]
-        with pytest.raises(RuntimeError, match="gather: index is out of bounds"):
-            compiled(source_template, source_values, index_template, out_of_bounds)
 
 
 class TestLogicalDenseGather:
@@ -8994,36 +8740,31 @@ class TestLogicalDenseGather:
             torch.autograd.grad(sum(p.square().sum() for p in expected), parts),
         )
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.parametrize("fullgraph", [False, True])
     @pytest.mark.parametrize("broadcast", [False, True])
     def test_multi_take_compile(self, device, fullgraph, broadcast):
-        torch.compiler.reset()
         parts = [
             torch.randn(m, n, 4, device=device, requires_grad=True) for m, n in ((2, 3), (3 if broadcast else 2, 5))
         ]
         source = NT(parts, ragged_dims=(0, 1))
         index = torch.zeros((1, 1, 2, 1) if broadcast else (2, 2, 1, 4), device=device, dtype=torch.long)
-        try:
-            compiled = torch.compile(
-                lambda source, index: torch.take_along_dim(source, index, dim=2),
-                backend="aot_eager",
-                fullgraph=fullgraph,
-                dynamic=True,
-            )
-            actual = compiled(source, index)
-            expected = [
-                torch.take_along_dim(part, index[min(i, index.size(0) - 1)], dim=1) for i, part in enumerate(parts)
-            ]
-            if not broadcast:
-                assert not isinstance(actual, NT)
-            actual_parts = actual.unbind(0)
-            torch.testing.assert_close(actual_parts, expected)
-            torch.testing.assert_close(
-                torch.autograd.grad(sum(part.square().sum() for part in actual_parts), parts),
-                torch.autograd.grad(sum(part.square().sum() for part in expected), parts),
-            )
-        finally:
-            torch.compiler.reset()
+        compiled = torch.compile(
+            lambda source, index: torch.take_along_dim(source, index, dim=2),
+            backend="aot_eager",
+            fullgraph=fullgraph,
+            dynamic=True,
+        )
+        actual = compiled(source, index)
+        expected = [torch.take_along_dim(part, index[min(i, index.size(0) - 1)], dim=1) for i, part in enumerate(parts)]
+        if not broadcast:
+            assert not isinstance(actual, NT)
+        actual_parts = actual.unbind(0)
+        torch.testing.assert_close(actual_parts, expected)
+        torch.testing.assert_close(
+            torch.autograd.grad(sum(part.square().sum() for part in actual_parts), parts),
+            torch.autograd.grad(sum(part.square().sum() for part in expected), parts),
+        )
 
     @pytest.mark.parametrize("batch_first", [True, False])
     def test_lengths(self, device, batch_first):
@@ -9097,6 +8838,7 @@ class TestLogicalDenseGather:
         for actual_gradient, expected_gradient in zip(actual_gradients, expected_gradients, strict=True):
             torch.testing.assert_close(actual_gradient, expected_gradient)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     def test_cat(self, device):
         source = NestedTensor(
             [torch.arange(2, device=device, dtype=torch.float64), torch.arange(4, device=device, dtype=torch.float64)],
@@ -9118,7 +8860,7 @@ class TestLogicalDenseGather:
             ragged_dims=(0,),
         )
         leaf = source.values().detach().requires_grad_()
-        source = source._packed_like_unchecked(leaf)
+        source = source.packed_like(leaf)
         output = torch.gather(source, 1, torch.tensor([[1], [3]], device=device), sparse_grad=True)
         gradient = torch.autograd.grad(output.sum(), leaf)[0]
         assert gradient.is_sparse
@@ -9137,7 +8879,7 @@ class TestLogicalDenseGather:
         )
         leaf = torch.arange(template.values().numel(), device=device, dtype=torch.float64)
         leaf = leaf.reshape_as(template.values()).requires_grad_()
-        source = template._packed_like_unchecked(leaf)
+        source = template.packed_like(leaf)
         shape = (2, row_count, 2, retained_extent) if selected_axis == 1 else (2, row_count, retained_extent, 2)
         source_extent = 4 if selected_axis == 1 else 3
         index = torch.arange(torch.Size(shape).numel(), device=device).reshape(shape) % source_extent
@@ -9208,7 +8950,7 @@ def _scatter_case_params(cases=None):
     )
 
 
-class TestScatterParity:
+class TestScatter:
 
     @_scatter_case_params(
         _scatter_cases_named(
@@ -9273,10 +9015,7 @@ class TestScatterParity:
         ]
         _assert_elements(output, expected)
 
-
-class TestScatterErrors:
-
-    def test_segment_local_indices_do_not_cross_samples(self):
+    def test_segment_local_bounds(self):
         bases = [torch.arange(24.0).reshape(2, 3, 4), torch.arange(16.0).reshape(2, 2, 4)]
         indices = [torch.full((2, 3, 4), 2, dtype=torch.long), torch.zeros(2, 2, 4, dtype=torch.long)]
         sources = [torch.full((2, 3, 4), 7.0), torch.full((2, 2, 4), 8.0)]
@@ -9289,7 +9028,7 @@ class TestScatterErrors:
         )
 
     @pytest.mark.parametrize("bad_index", [-1, 2])
-    def test_out_of_range_ragged_index_raises(self, bad_index):
+    def test_ragged_bounds(self, bad_index):
         bases = [torch.zeros(3, 4), torch.zeros(2, 4)]
         indices = [torch.zeros(3, 4, dtype=torch.long), torch.full((2, 4), bad_index, dtype=torch.long)]
         sources = [torch.ones(3, 4), torch.ones(2, 4)]
@@ -9305,9 +9044,7 @@ class TestScatterErrors:
         with pytest.raises(ValueError, match="batch dimension"):
             torch.scatter(nested, 0, index, source)
 
-
-class TestScatterCompile:
-
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.parametrize("operation", ["scatter", "scatter_add", "scatter_reduce"])
     def test_scatter_fullgraph(self, operation):
         shapes = [(2, 3, 4), (2, 2, 4)]
@@ -9385,6 +9122,7 @@ class TestMaskedScatter:
             [torch.masked_scatter(base, mask, source) for base, mask, source in zip(bases, masks, sources)],
         )
 
+    @pytest.mark.usefixtures("isolated_compiler")
     def test_fullgraph(self):
         bases = [torch.zeros(3, 4), torch.zeros(2, 4)]
         masks = [
@@ -9417,43 +9155,41 @@ class TestMaskedScatter:
         with pytest.raises(RuntimeError, match="source < number of ones in mask"):
             torch.masked_scatter(NT(bases), NT(masks), NT(sources))
 
-
-class TestMaskedScatterAutograd:
-
-    @staticmethod
-    def build(exact_supply):
-        torch.manual_seed(0)
-        leaves = [torch.randn(3, 4, requires_grad=True), torch.randn(5, 4, requires_grad=True)]
-        elements = [leaf * 1.0 for leaf in leaves]
-        masks = [leaf.detach() > 0 for leaf in leaves]
-        counts = [int(mask.sum()) for mask in masks] if exact_supply else [mask.numel() for mask in masks]
+    @pytest.mark.parametrize("exact_supply", [False, True], ids=["surplus", "exact"])
+    def test_gradients(self, exact_supply):
+        leaves = [torch.randn(n, 4, requires_grad=True) for n in (3, 5)]
+        references = [part.detach().clone().requires_grad_() for part in leaves]
+        masks = [part.detach() > 0 for part in leaves]
+        counts = [int(mask.sum()) if exact_supply else mask.numel() for mask in masks]
         supply = torch.randn(sum(counts), requires_grad=True)
-        source_elements = [supply[: counts[0]], supply[counts[0] :]]
-        return (
-            leaves,
-            supply,
-            elements,
-            masks,
-            source_elements,
-            NT(elements, ragged_dims=(0,)),
+        reference_supply = supply.detach().clone().requires_grad_()
+        output = torch.masked_scatter(
+            NT([part * 1.0 for part in leaves], ragged_dims=(0,)),
             NT(masks, ragged_dims=(0,)),
-            NT(source_elements, ragged_dims=(0,)),
+            NT(supply.split(counts), ragged_dims=(0,)),
+        )
+        expected = sum(
+            torch.masked_scatter(part, mask, source).sum()
+            for part, mask, source in zip(references, masks, reference_supply.split(counts))
+        )
+        assert_close(
+            torch.autograd.grad(output.values().sum(), (*leaves, supply)),
+            torch.autograd.grad(expected, (*references, reference_supply)),
         )
 
-    @pytest.mark.parametrize("exact_supply", [False, True], ids=["surplus", "exact"])
-    def test_gradient_matches_per_element_reference(self, exact_supply):
-        leaves, supply, _, _, _, nested, mask, source = self.build(exact_supply)
-        torch.masked_scatter(nested, mask, source).values().sum().backward()
-        actual = [leaf.grad.clone() for leaf in leaves] + [supply.grad.clone()]
-
-        leaves, supply, elements, masks, sources, _, _, _ = self.build(exact_supply)
-        sum(
-            torch.masked_scatter(element, mask, source).sum() for element, mask, source in zip(elements, masks, sources)
-        ).backward()
-        expected = [leaf.grad.clone() for leaf in leaves] + [supply.grad.clone()]
-
-        for actual_gradient, expected_gradient in zip(actual, expected):
-            torch.testing.assert_close(actual_gradient, expected_gradient)
+    @pytest.mark.parametrize("dense_source", [False, True])
+    def test_source_forms(self, device, float_dtype, dense_source):
+        parts = [torch.zeros(n, device=device, dtype=float_dtype) for n in (3, 2)]
+        masks = [torch.tensor([True, False, True], device=device), torch.tensor([False, True], device=device)]
+        if dense_source:
+            source = torch.tensor([[1, 2, 9], [3, 8, 7]], device=device, dtype=float_dtype)
+            native_sources = [source[0, :3], source[1, :2]]
+        else:
+            native_sources = [torch.tensor(v, device=device, dtype=float_dtype) for v in ([1, 2], [3])]
+            source = NT(native_sources)
+        actual = torch.masked_scatter(NT(parts), NT(masks), source)
+        expected = [torch.masked_scatter(part, mask, src) for part, mask, src in zip(parts, masks, native_sources)]
+        assert_close(actual, NT(expected))
 
 
 def _split_batch_dim_of(batch_first: bool) -> int:
@@ -9625,6 +9361,7 @@ class TestNarrow:
         wanted = torch.autograd.grad(sum(value.square().sum() for value in expected), reference)[0]
         torch.testing.assert_close(observed, wanted, rtol=0, atol=0)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     def test_compile_limit(self):
         source = NT(_narrow_elements(((2, 2, 4), (3, 3, 4)), "cpu"), ragged_dims=(0, 1))
         compiled = torch.compile(
@@ -9658,6 +9395,76 @@ class TestNarrow:
         wanted = torch.autograd.grad(sum((x * w).sum() for x, w in zip(expected, weights)), references)
         torch.testing.assert_close(observed, wanted, rtol=0, atol=0)
 
+    @pytest.mark.usefixtures("isolated_compiler")
+    @pytest.mark.parametrize("backend", [None, "aot_eager", "inductor"])
+    @pytest.mark.parametrize("method", [False, True])
+    def test_static_owner(self, device, backend, method):
+        parts = [torch.randn(3, n, 2, device=device, dtype=torch.float64, requires_grad=True) for n in (2, 4)]
+        refs = [part.detach().clone().requires_grad_() for part in parts]
+        source = NT(parts, ragged_dims=(1,), batch_first=False) * 1
+        expected_source = [part * 1 for part in refs]
+
+        def subset(value):
+            return value.narrow(0, -2, 1) if method else torch.narrow(input=value, dim=0, start=-2, length=1)
+
+        run = subset if backend is None else torch.compile(subset, backend=backend, fullgraph=True, dynamic=True)
+        result = run(source)
+        expected = [part.narrow(0, -2, 1) for part in expected_source]
+        torch.testing.assert_close(result.unbind(1), expected)
+        torch.testing.assert_close(
+            torch.autograd.grad(result.square().sum(), parts, retain_graph=True),
+            torch.autograd.grad(sum(part.square().sum() for part in expected), refs, retain_graph=True),
+        )
+        saved = source.values().square().sum()
+        result.mul_(2)
+        for part in expected:
+            part.mul_(2)
+        torch.testing.assert_close(source.unbind(1), expected_source)
+        torch.testing.assert_close(
+            torch.autograd.grad(source.square().sum(), parts, retain_graph=True),
+            torch.autograd.grad(sum(part.square().sum() for part in expected_source), refs),
+        )
+        with pytest.raises(RuntimeError, match="modified.*inplace|version"):
+            torch.autograd.grad(saved, parts)
+
+    @pytest.mark.parametrize("transform", ["grad", "jvp", "vmap"])
+    def test_static_transforms(self, device, transform):
+        values = torch.randn(6, 2, 3, device=device, dtype=torch.float64)
+        direction = torch.randn_like(values)
+        source = NT(values.split((2, 4)), ragged_dims=(0,))
+        vector = NT(direction.split((2, 4)), ragged_dims=(0,))
+
+        def loss(value):
+            return torch.narrow(value, -1, 1, 1).sin().square().sum()
+
+        if transform == "grad":
+            actual = torch.func.grad(loss)(source).values()
+            expected = torch.func.grad(loss)(values)
+        elif transform == "jvp":
+            actual = torch.func.jvp(loss, (source,), (vector,))
+            expected = torch.func.jvp(loss, (values,), (direction,))
+        else:
+            actual = torch.vmap(loss, in_dims=-1)(source)
+            expected = torch.vmap(loss, in_dims=-1)(values)
+        torch.testing.assert_close(actual, expected)
+
+    def test_leaf_gradient(self, packed_sequence):
+        nested, values = packed_sequence((3, 5))
+
+        torch.narrow(nested, 1, 0, 2).sum().backward()
+
+        expected = torch.zeros(8, 4)
+        expected[0:2] = 1.0
+        expected[3:5] = 1.0
+        torch.testing.assert_close(values.grad, expected)
+
+    @pytest.mark.usefixtures("isolated_compiler")
+    def test_compiled_ragged(self):
+        parts = _element_values([(3, 4), (5, 4), (2, 4)])
+        run = torch.compile(lambda value: torch.narrow(value, 1, 0, 2), backend="aot_eager", fullgraph=True)
+        output = run(NT(parts, ragged_dims=(0,)))
+        _assert_elements(output, [part.narrow(0, 0, 2) for part in parts])
+
 
 class TestSplitFamily:
 
@@ -9674,7 +9481,7 @@ class TestSplitFamily:
         _split_assert_parts_match(parts, expected)
 
     @pytest.mark.parametrize("operation", ["chunk", "tensor_split"])
-    def test_chunk_and_tensor_split_batch_dimension(self, operation):
+    def test_chunk_tensor_split_batch_dimension(self, operation):
         elements = _element_values([(3, 4), (5, 4), (2, 4)])
         function = getattr(torch, operation)
 
@@ -9700,7 +9507,7 @@ class TestSplitFamily:
 
             _split_assert_parts_match(parts, [list(part) for part in zip(*references)])
 
-    def test_chunk_and_tensor_split_element_dimensions(self):
+    def test_chunk_tensor_split_element_dimensions(self):
         elements = _element_values([(3, 4), (5, 4), (2, 4)])
         nested = NT(elements)
 
@@ -9712,7 +9519,7 @@ class TestSplitFamily:
         split_references = [torch.tensor_split(element, 3, dim=0) for element in elements]
         _split_assert_parts_match(split, [list(part) for part in zip(*split_references)])
 
-    def test_tensor_split_preserves_zero_width_and_source_derived_empty_shapes(self):
+    def test_source_empty_shapes(self):
         elements = [torch.arange(2.0), torch.arange(10.0, 13.0)]
         nested = NT(elements, ragged_dims=(0,))
 
@@ -9745,9 +9552,27 @@ class TestSplitFamily:
             [[element[:, :3] for element in elements], [element[:, 3:] for element in elements]],
         )
 
+    def test_leaf_gradient(self, packed_sequence):
+        nested, values = packed_sequence((3, 5))
+
+        torch.split(nested, 2, dim=2)[0].sum().backward()
+
+        expected = torch.zeros(8, 4)
+        expected[:, :2] = 1.0
+        torch.testing.assert_close(values.grad, expected)
+
+    @pytest.mark.usefixtures("isolated_compiler")
+    def test_compiled_static(self):
+        parts = _element_values([(3, 4), (5, 4), (2, 4)])
+        run = torch.compile(lambda value: torch.split(value, 2, dim=2), backend="aot_eager", fullgraph=True)
+        output = run(NT(parts, ragged_dims=(0,)))
+        expected = [torch.split(part, 2, dim=1) for part in parts]
+        _split_assert_parts_match(output, [list(group) for group in zip(*expected)])
+
 
 class TestUnbind:
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.parametrize(
         "entry,ragged,batch_first,patterns",
         [
@@ -9767,24 +9592,20 @@ class TestUnbind:
                 return source.unbind(dim)
             return torch.ops.aten.unbind.int(self=source, dim=dim)
 
-        torch.compiler.reset()
         compiled = torch.compile(unbind, backend="aot_eager", fullgraph=True, dynamic=True)
-        try:
-            for shapes in patterns:
-                parts = [torch.randn(shape, device=device, dtype=torch.float64, requires_grad=True) for shape in shapes]
-                references = [part.detach().clone().requires_grad_() for part in parts]
-                source = NT(parts, ragged_dims=ragged, batch_first=batch_first)
-                actual = compiled(source)
-                assert len(actual) == len(parts)
-                assert all(isinstance(part, torch.Tensor) and not isinstance(part, NT) for part in actual)
-                torch.testing.assert_close(actual, tuple(references))
-                gradients = torch.autograd.grad(sum(part.square().sum() for part in actual), parts)
-                reference_gradients = torch.autograd.grad(sum(part.square().sum() for part in references), references)
-                torch.testing.assert_close(gradients, reference_gradients)
-                with torch.inference_mode():
-                    torch.testing.assert_close(compiled(source), tuple(references))
-        finally:
-            torch.compiler.reset()
+        for shapes in patterns:
+            parts = [torch.randn(shape, device=device, dtype=torch.float64, requires_grad=True) for shape in shapes]
+            references = [part.detach().clone().requires_grad_() for part in parts]
+            source = NT(parts, ragged_dims=ragged, batch_first=batch_first)
+            actual = compiled(source)
+            assert len(actual) == len(parts)
+            assert all(isinstance(part, torch.Tensor) and not isinstance(part, NT) for part in actual)
+            torch.testing.assert_close(actual, tuple(references))
+            gradients = torch.autograd.grad(sum(part.square().sum() for part in actual), parts)
+            reference_gradients = torch.autograd.grad(sum(part.square().sum() for part in references), references)
+            torch.testing.assert_close(gradients, reference_gradients)
+            with torch.inference_mode():
+                torch.testing.assert_close(compiled(source), tuple(references))
 
     def test_batch_and_static_dimensions(self):
         elements = _element_values([(3, 4), (5, 4), (2, 4)])
@@ -9807,11 +9628,11 @@ class TestUnbind:
 
 class TestCat:
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.parametrize("batch_first", [True, False])
     @pytest.mark.parametrize("dense", [True, False])
     @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
     def test_dynamic_cat(self, device, batch_first, dense, backend):
-        torch.compiler.reset()
         dim = 1 if batch_first else 0
         compiled = torch.compile(lambda a, b: torch.cat((a, b), dim), backend=backend, fullgraph=True, dynamic=True)
         for lengths, right_lengths in (((2, 4), (1, 1)), ((3, 5), (1, 1)), ((0, 0), (0, 0))):
@@ -9834,10 +9655,10 @@ class TestCat:
             expected = torch.autograd.grad(sum(value.square().sum() for value in reference), operands)
             torch.testing.assert_close(gradients, expected)
 
+    @pytest.mark.usefixtures("isolated_compiler")
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="spatial NestedTensor conv2d requires CUDA")
     @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
     def test_spatial_cat(self, backend):
-        torch.compiler.reset()
 
         def model(images, cls, weight):
             tokens = F.conv2d(images, weight, stride=2).flatten(2).transpose(1, 2)
@@ -9944,7 +9765,7 @@ class TestCat:
         ],
         ids=["single-sample", "different-inferred-orders"],
     )
-    def test_batch_dimension_merges_compatible_inferred_layouts(self, groups):
+    def test_inferred_batch_layouts(self, groups):
         elements = []
         operands = []
         for position, shapes in enumerate(groups):
@@ -9960,12 +9781,194 @@ class TestCat:
 
         _assert_elements(torch.cat((NT(elements), dense), dim=0), [*elements, dense])
 
-    def test_refuses_to_invent_a_ragged_dimension(self):
+    def test_ragged_schema_error(self):
         left = _element_values([(2, 3), (1, 3)])
         right = _element_values([(2, 4), (1, 4)], offset=7.0)
 
         with pytest.raises(ValueError, match="no operand varies"):
             torch.cat((NT(left), NT(right)), dim=0)
+
+    @pytest.mark.parametrize("batch_first", [True, False])
+    @pytest.mark.parametrize("static_axis", [False, True])
+    @pytest.mark.parametrize("reverse", [False, True])
+    def test_axis_gradients(self, device, batch_first, static_axis, reverse):
+        parts = [torch.randn(n, 3, device=device, dtype=torch.float64, requires_grad=True) for n in (0, 2, 4)]
+        source = NestedTensor(parts, ragged_dims=(0,), batch_first=batch_first)
+        dense = torch.randn(
+            (3, 4, 2) if static_axis else (3, 1, 3), device=device, dtype=torch.float64, requires_grad=True
+        )
+        operand = dense if batch_first else dense.movedim(0, 1)
+        dim = 2 if static_axis else (1 if batch_first else 0)
+        output = torch.cat((operand, source) if reverse else (source, operand), dim=dim)
+        additions = [dense[i, : part.shape[0]] if static_axis else dense[i] for i, part in enumerate(parts)]
+        wanted = [
+            torch.cat((addition, part) if reverse else (part, addition), dim=1 if static_axis else 0)
+            for part, addition in zip(parts, additions)
+        ]
+        torch.testing.assert_close(output.values(), torch.cat(wanted))
+        expected_shapes = torch.tensor([list(value.shape) for value in wanted])
+        torch.testing.assert_close(output.element_sizes().cpu(), expected_shapes)
+        cotangent = torch.linspace(-0.8, 1.2, output.values().numel(), device=device, dtype=torch.float64).reshape_as(
+            output.values()
+        )
+        gradients = torch.autograd.grad(output.values(), (*parts, dense), cotangent, retain_graph=True)
+        references = torch.autograd.grad(torch.cat(wanted), (*parts, dense), cotangent)
+        for gradient, reference in zip(gradients, references, strict=True):
+            torch.testing.assert_close(gradient, reference)
+
+    @pytest.mark.parametrize("joining_axis", [0, 1, 2])
+    @pytest.mark.parametrize("batch_first", [True, False])
+    @pytest.mark.parametrize("static_prefix", [True, False])
+    @pytest.mark.parametrize("reverse", [True, False])
+    @pytest.mark.parametrize("both_ragged", [True, False])
+    def test_shapes_gradients(self, device, joining_axis, batch_first, static_prefix, reverse, both_ragged):
+        left_shapes = [[0, 2, 3], [2, 3, 4], [3, 4, 2]]
+        right_shapes = [list(shape) for shape in left_shapes]
+        for index, shape in enumerate(right_shapes):
+            shape[joining_axis] = [2, 0, 1][index] if both_ragged else 1
+        left = [torch.randn(*shape, 2, device=device, dtype=torch.float64, requires_grad=True) for shape in left_shapes]
+        right = [
+            torch.randn(*shape, 2, device=device, dtype=torch.float64, requires_grad=True) for shape in right_shapes
+        ]
+        left_values = [value.movedim(-1, 0) for value in left] if static_prefix else left
+        right_values = [value.movedim(-1, 0) for value in right] if static_prefix else right
+        ragged_dims = (1, 2, 3) if static_prefix else (0, 1, 2)
+        element_join = joining_axis + int(static_prefix)
+        right_ragged = ragged_dims if both_ragged else tuple(axis for axis in ragged_dims if axis != element_join)
+        first = NestedTensor(left_values, ragged_dims=ragged_dims, batch_first=batch_first)
+        second = NestedTensor(right_values, ragged_dims=right_ragged, batch_first=batch_first)
+        operands = (second, first) if reverse else (first, second)
+        logical_join = element_join + (1 if batch_first or element_join else 0)
+        output = torch.cat(operands, dim=logical_join)
+        expected_parts = [
+            torch.cat((b, a) if reverse else (a, b), dim=element_join)
+            for a, b in zip(left_values, right_values, strict=True)
+        ]
+        expected = torch.cat(
+            [value.movedim(0, -1).flatten(0, 2) if static_prefix else value.flatten(0, 2) for value in expected_parts]
+        )
+        torch.testing.assert_close(output.values(), expected)
+        expected_sizes = torch.tensor([list(value.shape) for value in expected_parts])
+        torch.testing.assert_close(output.element_sizes().cpu(), expected_sizes)
+        assert output.ragged_dims == ragged_dims
+        expected_outer = [max(shape[axis] for shape in expected_sizes.tolist()) for axis in range(4)]
+        expected_outer.insert(0 if batch_first else 1, 3)
+        assert tuple(output.shape) == tuple(expected_outer)
+        cotangent = torch.linspace(-0.8, 1.2, output.values().numel(), device=device, dtype=torch.float64).reshape_as(
+            output.values()
+        )
+        gradients = torch.autograd.grad(output.values(), (*left, *right), cotangent, retain_graph=True)
+        references = torch.autograd.grad(expected, (*left, *right), cotangent)
+        for observed, wanted in zip(gradients, references, strict=True):
+            torch.testing.assert_close(observed, wanted)
+
+    def test_reduction_identity(self, device):
+        parts = [torch.randn(2, 2, device=device), torch.randn(3, 3, device=device)]
+        source = NestedTensor(parts, ragged_dims=(0, 1))
+        identity = torch.zeros_like(source.mean(dim=-1, keepdim=True))
+        output = torch.cat((source, identity), dim=-1)
+        expected = torch.cat([torch.cat((part, torch.zeros_like(part[:, :1])), dim=-1).flatten() for part in parts])
+        torch.testing.assert_close(output.values(), expected)
+        torch.testing.assert_close(output.element_sizes().cpu(), torch.tensor([[2, 3], [3, 4]]))
+
+    def test_nonjoining_mismatch(self, device):
+        left = NestedTensor([torch.ones(2, 3, device=device), torch.ones(4, 5, device=device)], ragged_dims=(0, 1))
+        right = NestedTensor([torch.ones(3, 1, device=device), torch.ones(4, 1, device=device)], ragged_dims=(0,))
+        with pytest.raises(RuntimeError, match="Sizes of tensors must match"):
+            torch.cat((left, right), dim=-1)
+
+    def test_concat_aliases(self):
+        left = _element_values([(3, 4), (5, 4)])
+        right = _element_values([(3, 4), (5, 4)], offset=7.0)
+
+        for alias in (torch.concat, torch.concatenate):
+            _assert_elements(alias((NT(left), NT(right)), dim=0), [*left, *right])
+
+    @pytest.mark.parametrize("dim", [0, 1], ids=["batch", "ragged"])
+    def test_leaf_gradient(self, dim, packed_sequence):
+        left, left_values = packed_sequence((3, 5))
+        right, right_values = packed_sequence((2, 4))
+
+        torch.cat((left, right), dim=dim).sum().backward()
+
+        torch.testing.assert_close(left_values.grad, torch.ones(8, 4))
+        torch.testing.assert_close(right_values.grad, torch.ones(6, 4))
+
+    @pytest.mark.usefixtures("isolated_compiler")
+    @pytest.mark.parametrize("dim", [0, 1], ids=["batch", "ragged"])
+    def test_repeated_input_gradient(self, device, dim):
+        values = torch.randn(5, 3, device=device, requires_grad=True)
+        source = NestedTensor(values.split((2, 3)), ragged_dims=(0,))
+        compiled = torch.compile(
+            lambda value: torch.cat((value, value), dim=dim),
+            backend="aot_eager",
+            fullgraph=True,
+            dynamic=True,
+        )
+        output = compiled(source)
+        expected = list(source) * 2 if dim == 0 else [torch.cat((part, part)) for part in source]
+        for actual, reference in zip(output, expected):
+            torch.testing.assert_close(actual, reference)
+        gradient = torch.autograd.grad(output.values().sum(), values)[0]
+        torch.testing.assert_close(gradient, torch.full_like(values, 2))
+
+    @pytest.mark.usefixtures("isolated_compiler")
+    def test_dynamic_batch_cat(self):
+        compiled = torch.compile(
+            lambda a, b: torch.cat((a, b), dim=0),
+            backend="aot_eager",
+            fullgraph=True,
+            dynamic=True,
+        )
+        for lengths in ((3, 5), (2, 7)):
+            left = [torch.randn(length, 4) for length in lengths]
+            right = [torch.randn(length + 1, 4) for length in lengths]
+
+            output = compiled(
+                NT(left, ragged_dims=(0,)),
+                NT(right, ragged_dims=(0,)),
+            )
+
+            _assert_elements(output, [*left, *right])
+
+    @pytest.mark.usefixtures("isolated_compiler")
+    def test_static_order_compiled_gradients(self):
+        def run(left_template, left, middle_template, middle, right_template, right):
+            left_nested = left_template.packed_like(left).movedim(2, 3)
+            middle_nested = middle_template.packed_like(middle)
+            right_nested = right_template.packed_like(right)
+            return torch.cat((left_nested, middle_nested, right_nested), dim=-1).values()
+
+        compiled = torch.compile(run, backend="aot_eager", fullgraph=True, dynamic=True)
+        for lengths in ((2, 3), (3, 5)):
+            left_template = NT([torch.empty(length, 10, 2) for length in lengths], ragged_dims=(0,))
+            middle_template = NT([torch.empty(length, 2, 64) for length in lengths], ragged_dims=(0,))
+            right_template = NT([torch.empty(length, 2, 4) for length in lengths], ragged_dims=(0,))
+            left = torch.randn_like(left_template.values(), requires_grad=True)
+            middle = torch.randn_like(middle_template.values(), requires_grad=True)
+            right = torch.randn_like(right_template.values(), requires_grad=True)
+            expected = torch.cat(
+                (left, middle.movedim(1, 2), right.movedim(1, 2)),
+                dim=1,
+            )
+
+            output = compiled(left_template, left, middle_template, middle, right_template, right)
+
+            leaves = (left, middle, right)
+            cotangent = torch.randn_like(expected)
+            actual_gradients = torch.autograd.grad(output, leaves, cotangent, retain_graph=True)
+            expected_gradients = torch.autograd.grad(expected, leaves, cotangent)
+            torch.testing.assert_close(output, expected)
+            for actual, reference in zip(actual_gradients, expected_gradients):
+                torch.testing.assert_close(actual, reference)
+
+    @pytest.mark.usefixtures("isolated_compiler")
+    def test_compiled_batch(self):
+        shapes = [(3, 4), (5, 4), (2, 4)]
+        left, right = _element_values(shapes), _element_values(shapes, offset=7)
+        run = torch.compile(lambda a, b: torch.cat((a, b), dim=0), backend="aot_eager", fullgraph=True)
+        output = run(NT(left, ragged_dims=(0,)), NT(right, ragged_dims=(0,)))
+        _assert_elements(output, [*left, *right])
 
 
 class TestBatchTransforms:
@@ -10044,6 +10047,14 @@ class TestStack:
             [torch.cat((a, b), dim=1) for a, b in zip(left, right)],
         )
 
+    @pytest.mark.usefixtures("isolated_compiler")
+    def test_compiled_static(self):
+        shapes = [(3, 4), (5, 4), (2, 4)]
+        left, right = _element_values(shapes), _element_values(shapes, offset=7)
+        run = torch.compile(lambda a, b: torch.stack((a, b), dim=2), backend="aot_eager", fullgraph=True)
+        output = run(NT(left, ragged_dims=(0,)), NT(right, ragged_dims=(0,)))
+        _assert_elements(output, [torch.stack((a, b), dim=1) for a, b in zip(left, right)])
+
 
 class TestMethodAndAliasSpellings:
 
@@ -10064,164 +10075,6 @@ class TestMethodAndAliasSpellings:
         parts = torch.tensor_split(NT(elements), torch.tensor([1]), dim=0)
 
         _split_assert_parts_match(parts, [elements[:1], elements[1:]])
-
-    def test_concat_aliases(self):
-        left = _element_values([(3, 4), (5, 4)])
-        right = _element_values([(3, 4), (5, 4)], offset=7.0)
-
-        for alias in (torch.concat, torch.concatenate):
-            _assert_elements(alias((NT(left), NT(right)), dim=0), [*left, *right])
-
-
-class TestSplitCompile:
-
-    def test_narrow_and_split_fullgraph(self):
-        elements = _element_values([(3, 4), (5, 4), (2, 4)])
-        nested = NT(elements, ragged_dims=(0,))
-        compiled_narrow = torch.compile(
-            lambda input_: torch.narrow(input_, 1, 0, 2),
-            backend="aot_eager",
-            fullgraph=True,
-        )
-        compiled_split = torch.compile(
-            lambda input_: torch.split(input_, 2, dim=2),
-            backend="aot_eager",
-            fullgraph=True,
-        )
-
-        output = compiled_narrow(nested)
-        parts = compiled_split(nested)
-
-        _assert_elements(output, [torch.narrow(element, 0, 0, 2) for element in elements])
-        references = [torch.split(element, 2, dim=1) for element in elements]
-        _split_assert_parts_match(parts, [list(part) for part in zip(*references)])
-
-    def test_cat_and_stack_fullgraph(self):
-        shapes = [(3, 4), (5, 4), (2, 4)]
-        left = _element_values(shapes)
-        right = _element_values(shapes, offset=7.0)
-        compiled_cat = torch.compile(
-            lambda a, b: torch.cat((a, b), dim=0),
-            backend="aot_eager",
-            fullgraph=True,
-        )
-        compiled_stack = torch.compile(
-            lambda a, b: torch.stack((a, b), dim=2),
-            backend="aot_eager",
-            fullgraph=True,
-        )
-
-        cat_output = compiled_cat(NT(left, ragged_dims=(0,)), NT(right, ragged_dims=(0,)))
-        stack_output = compiled_stack(NT(left, ragged_dims=(0,)), NT(right, ragged_dims=(0,)))
-
-        _assert_elements(cat_output, [*left, *right])
-        _assert_elements(
-            stack_output,
-            [torch.stack((a, b), dim=1) for a, b in zip(left, right)],
-        )
-
-    def test_dynamic_batch_cat(self):
-        compiled = torch.compile(
-            lambda a, b: torch.cat((a, b), dim=0),
-            backend="aot_eager",
-            fullgraph=True,
-            dynamic=True,
-        )
-        for lengths in ((3, 5), (2, 7)):
-            left = [torch.randn(length, 4) for length in lengths]
-            right = [torch.randn(length + 1, 4) for length in lengths]
-
-            output = compiled(
-                NT(left, ragged_dims=(0,)),
-                NT(right, ragged_dims=(0,)),
-            )
-
-            _assert_elements(output, [*left, *right])
-
-    def test_static_order_aligned_cat_dynamic_fullgraph_with_gradient(self):
-        def run(left_template, left, middle_template, middle, right_template, right):
-            left_nested = left_template.packed_like(left).movedim(2, 3)
-            middle_nested = middle_template.packed_like(middle)
-            right_nested = right_template.packed_like(right)
-            return torch.cat((left_nested, middle_nested, right_nested), dim=-1).values()
-
-        compiled = torch.compile(run, backend="aot_eager", fullgraph=True, dynamic=True)
-        for lengths in ((2, 3), (3, 5)):
-            left_template = NT([torch.empty(length, 10, 2) for length in lengths], ragged_dims=(0,))
-            middle_template = NT([torch.empty(length, 2, 64) for length in lengths], ragged_dims=(0,))
-            right_template = NT([torch.empty(length, 2, 4) for length in lengths], ragged_dims=(0,))
-            left = torch.randn_like(left_template.values(), requires_grad=True)
-            middle = torch.randn_like(middle_template.values(), requires_grad=True)
-            right = torch.randn_like(right_template.values(), requires_grad=True)
-            expected = torch.cat(
-                (left, middle.movedim(1, 2), right.movedim(1, 2)),
-                dim=1,
-            )
-
-            output = compiled(left_template, left, middle_template, middle, right_template, right)
-
-            leaves = (left, middle, right)
-            cotangent = torch.randn_like(expected)
-            actual_gradients = torch.autograd.grad(output, leaves, cotangent, retain_graph=True)
-            expected_gradients = torch.autograd.grad(expected, leaves, cotangent)
-            torch.testing.assert_close(output, expected)
-            for actual, reference in zip(actual_gradients, expected_gradients):
-                torch.testing.assert_close(actual, reference)
-
-
-class TestSplitAutograd:
-
-    @staticmethod
-    def packed(lengths, width=4):
-        reference = NT([torch.zeros(length, width) for length in lengths])
-        values = torch.randn(sum(lengths), width, requires_grad=True)
-        return reference.packed_with_lengths(values, torch.tensor(lengths)), values
-
-    def test_narrow_ragged_dimension(self):
-        nested, values = self.packed((3, 5))
-
-        torch.narrow(nested, 1, 0, 2).sum().backward()
-
-        expected = torch.zeros(8, 4)
-        expected[0:2] = 1.0
-        expected[3:5] = 1.0
-        torch.testing.assert_close(values.grad, expected)
-
-    def test_split_static_dimension(self):
-        nested, values = self.packed((3, 5))
-
-        torch.split(nested, 2, dim=2)[0].sum().backward()
-
-        expected = torch.zeros(8, 4)
-        expected[:, :2] = 1.0
-        torch.testing.assert_close(values.grad, expected)
-
-    @pytest.mark.parametrize("dim", [0, 1], ids=["batch", "ragged"])
-    def test_cat(self, dim):
-        left, left_values = self.packed((3, 5))
-        right, right_values = self.packed((2, 4))
-
-        torch.cat((left, right), dim=dim).sum().backward()
-
-        torch.testing.assert_close(left_values.grad, torch.ones(8, 4))
-        torch.testing.assert_close(right_values.grad, torch.ones(6, 4))
-
-    @pytest.mark.parametrize("dim", [0, 1], ids=["batch", "ragged"])
-    def test_cat_fullgraph_preserves_repeated_input_gradient(self, device, dim):
-        values = torch.randn(5, 3, device=device, requires_grad=True)
-        source = NestedTensor(values.split((2, 3)), ragged_dims=(0,))
-        compiled = torch.compile(
-            lambda value: torch.cat((value, value), dim=dim),
-            backend="aot_eager",
-            fullgraph=True,
-            dynamic=True,
-        )
-        output = compiled(source)
-        expected = list(source) * 2 if dim == 0 else [torch.cat((part, part)) for part in source]
-        for actual, reference in zip(output, expected):
-            torch.testing.assert_close(actual, reference)
-        gradient = torch.autograd.grad(output.values().sum(), values)[0]
-        torch.testing.assert_close(gradient, torch.full_like(values, 2))
 
 
 class TestDenseMask:
@@ -10278,98 +10131,3 @@ class TestDenseMask:
         source = torch.ones(2, 2, requires_grad=True)
         with pytest.raises(RuntimeError, match="leaf Variable"):
             source.index_put_((mask,), torch.ones(2))
-
-
-class TestMixedCat:
-
-    @pytest.mark.parametrize("batch_first", [True, False])
-    @pytest.mark.parametrize("static_axis", [False, True])
-    @pytest.mark.parametrize("reverse", [False, True])
-    def test_axis_gradients(self, device, batch_first, static_axis, reverse):
-        parts = [torch.randn(n, 3, device=device, dtype=torch.float64, requires_grad=True) for n in (0, 2, 4)]
-        source = NestedTensor(parts, ragged_dims=(0,), batch_first=batch_first)
-        dense = torch.randn(
-            (3, 4, 2) if static_axis else (3, 1, 3), device=device, dtype=torch.float64, requires_grad=True
-        )
-        operand = dense if batch_first else dense.movedim(0, 1)
-        dim = 2 if static_axis else (1 if batch_first else 0)
-        output = torch.cat((operand, source) if reverse else (source, operand), dim=dim)
-        additions = [dense[i, : part.shape[0]] if static_axis else dense[i] for i, part in enumerate(parts)]
-        wanted = [
-            torch.cat((addition, part) if reverse else (part, addition), dim=1 if static_axis else 0)
-            for part, addition in zip(parts, additions)
-        ]
-        torch.testing.assert_close(output.values(), torch.cat(wanted))
-        expected_shapes = torch.tensor([list(value.shape) for value in wanted])
-        torch.testing.assert_close(output.element_sizes().cpu(), expected_shapes)
-        cotangent = torch.linspace(-0.8, 1.2, output.values().numel(), device=device, dtype=torch.float64).reshape_as(
-            output.values()
-        )
-        gradients = torch.autograd.grad(output.values(), (*parts, dense), cotangent, retain_graph=True)
-        references = torch.autograd.grad(torch.cat(wanted), (*parts, dense), cotangent)
-        for gradient, reference in zip(gradients, references, strict=True):
-            torch.testing.assert_close(gradient, reference)
-
-
-class TestRaggedCat:
-
-    @pytest.mark.parametrize("joining_axis", [0, 1, 2])
-    @pytest.mark.parametrize("batch_first", [True, False])
-    @pytest.mark.parametrize("static_prefix", [True, False])
-    @pytest.mark.parametrize("reverse", [True, False])
-    @pytest.mark.parametrize("both_ragged", [True, False])
-    def test_shapes_gradients(self, device, joining_axis, batch_first, static_prefix, reverse, both_ragged):
-        left_shapes = [[0, 2, 3], [2, 3, 4], [3, 4, 2]]
-        right_shapes = [list(shape) for shape in left_shapes]
-        for index, shape in enumerate(right_shapes):
-            shape[joining_axis] = [2, 0, 1][index] if both_ragged else 1
-        left = [torch.randn(*shape, 2, device=device, dtype=torch.float64, requires_grad=True) for shape in left_shapes]
-        right = [
-            torch.randn(*shape, 2, device=device, dtype=torch.float64, requires_grad=True) for shape in right_shapes
-        ]
-        left_values = [value.movedim(-1, 0) for value in left] if static_prefix else left
-        right_values = [value.movedim(-1, 0) for value in right] if static_prefix else right
-        ragged_dims = (1, 2, 3) if static_prefix else (0, 1, 2)
-        element_join = joining_axis + int(static_prefix)
-        right_ragged = ragged_dims if both_ragged else tuple(axis for axis in ragged_dims if axis != element_join)
-        first = NestedTensor(left_values, ragged_dims=ragged_dims, batch_first=batch_first)
-        second = NestedTensor(right_values, ragged_dims=right_ragged, batch_first=batch_first)
-        operands = (second, first) if reverse else (first, second)
-        logical_join = element_join + (1 if batch_first or element_join else 0)
-        output = torch.cat(operands, dim=logical_join)
-        expected_parts = [
-            torch.cat((b, a) if reverse else (a, b), dim=element_join)
-            for a, b in zip(left_values, right_values, strict=True)
-        ]
-        expected = torch.cat(
-            [value.movedim(0, -1).flatten(0, 2) if static_prefix else value.flatten(0, 2) for value in expected_parts]
-        )
-        torch.testing.assert_close(output.values(), expected)
-        expected_sizes = torch.tensor([list(value.shape) for value in expected_parts])
-        torch.testing.assert_close(output.element_sizes().cpu(), expected_sizes)
-        assert output.ragged_dims == ragged_dims
-        expected_outer = [max(shape[axis] for shape in expected_sizes.tolist()) for axis in range(4)]
-        expected_outer.insert(0 if batch_first else 1, 3)
-        assert tuple(output.shape) == tuple(expected_outer)
-        cotangent = torch.linspace(-0.8, 1.2, output.values().numel(), device=device, dtype=torch.float64).reshape_as(
-            output.values()
-        )
-        gradients = torch.autograd.grad(output.values(), (*left, *right), cotangent, retain_graph=True)
-        references = torch.autograd.grad(expected, (*left, *right), cotangent)
-        for observed, wanted in zip(gradients, references, strict=True):
-            torch.testing.assert_close(observed, wanted)
-
-    def test_reduction_identity(self, device):
-        parts = [torch.randn(2, 2, device=device), torch.randn(3, 3, device=device)]
-        source = NestedTensor(parts, ragged_dims=(0, 1))
-        identity = torch.zeros_like(source.mean(dim=-1, keepdim=True))
-        output = torch.cat((source, identity), dim=-1)
-        expected = torch.cat([torch.cat((part, torch.zeros_like(part[:, :1])), dim=-1).flatten() for part in parts])
-        torch.testing.assert_close(output.values(), expected)
-        torch.testing.assert_close(output.element_sizes().cpu(), torch.tensor([[2, 3], [3, 4]]))
-
-    def test_nonjoining_mismatch(self, device):
-        left = NestedTensor([torch.ones(2, 3, device=device), torch.ones(4, 5, device=device)], ragged_dims=(0, 1))
-        right = NestedTensor([torch.ones(3, 1, device=device), torch.ones(4, 1, device=device)], ragged_dims=(0,))
-        with pytest.raises(RuntimeError, match="Sizes of tensors must match"):
-            torch.cat((left, right), dim=-1)

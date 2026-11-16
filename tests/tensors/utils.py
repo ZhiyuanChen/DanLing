@@ -84,16 +84,19 @@ def assert_close(input, other, *, rtol: float | None = None, atol: float | None 
     if not isinstance(input, NestedTensor) and not isinstance(other, NestedTensor):
         _assert_tensors_close(input, other)
         return
-    if not isinstance(input, NestedTensor):
-        input = other.nested_like(input)
-    elif not isinstance(other, NestedTensor):
-        other = input.nested_like(other)
-    if len(input) != len(other):
-        raise ValueError(
-            "NestedTensor batch length mismatch between input and other: " f"input={len(input)}, other={len(other)}"
-        )
-    for x, y in zip(input._unpack(), other._unpack()):
-        _assert_tensors_close(x, y)
+    with torch.no_grad():
+        if not isinstance(input, NestedTensor):
+            input = other.nested_like(input)
+        elif not isinstance(other, NestedTensor):
+            other = input.nested_like(other)
+        if len(input) != len(other):
+            raise ValueError(
+                "NestedTensor batch length mismatch between input and other: " f"input={len(input)}, other={len(other)}"
+            )
+        input_batch = 0 if input.batch_first or input.ndim <= 1 else 1
+        other_batch = 0 if other.batch_first or other.ndim <= 1 else 1
+        for x, y in zip(input.unbind(input_batch), other.unbind(other_batch)):
+            _assert_tensors_close(x, y)
 
 
 def low_precision_cuda_tolerances(

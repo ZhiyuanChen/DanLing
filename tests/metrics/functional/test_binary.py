@@ -169,7 +169,7 @@ class TestBinaryMetrics:
         )
         assert torch.isnan(torch.as_tensor(metric(empty_state)))
 
-    def test_return_nan_on_zero_confmat_totals(self, device) -> None:
+    def test_zero_confmat(self, device) -> None:
         confmat = torch.zeros((2, 2), device=device)
         state = MetricState(
             preds=torch.tensor([], device=device),
@@ -179,12 +179,12 @@ class TestBinaryMetrics:
         assert torch.isnan(torch.as_tensor(binary_accuracy()(state)))
         assert torch.isnan(torch.as_tensor(binary_hamming_loss()(state)))
 
-    def test_f1_alias(self) -> None:
-        assert isinstance(binary_f1(), binary_fbeta)
-        assert binary_f1_score is binary_f1
-
-    def test_fbeta_alias(self) -> None:
-        assert binary_fbeta_score is binary_fbeta
+    @pytest.mark.parametrize("alias,factory", [(binary_f1_score, binary_f1), (binary_fbeta_score, binary_fbeta)])
+    def test_alias(self, device, alias, factory):
+        actual, expected = alias(), factory()
+        state = build_confmat_state(expected, device)
+        assert actual.name == expected.name
+        assert_metric_close(actual(state), expected(state))
 
     def test_iou_name(self) -> None:
         assert binary_iou().name == "iou"

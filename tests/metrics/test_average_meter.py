@@ -124,10 +124,10 @@ def _distributed_average_meters_mixed_worker(rank: int, world_size: int):
 
 class TestAverageMeter:
 
-    def test_vector_reduction_with_an_empty_rank(self):
+    def test_empty_rank_vector(self):
         run_distributed(_distributed_average_meter_empty_vector_worker, world_size=2)
 
-    def test_collection_rejects_active_scalar_vector_mixture(self):
+    def test_distributed_mixed_values(self):
         run_distributed(_distributed_average_meters_mixed_type_worker, world_size=2)
 
     def test_tracks_basic_statistics(self):
@@ -180,7 +180,7 @@ class TestAverageMeter:
         assert torch.isnan(meter.avg).all()
         assert_close(meter.sum, torch.zeros(2, dtype=torch.float64))
 
-    def test_rejects_mixed_scalar_and_tensor_updates(self):
+    def test_mixed_values(self):
         meter = AverageMeter()
         meter.update(torch.tensor([1.0, 2.0]))
 
@@ -194,7 +194,7 @@ class TestAverageMeter:
         with pytest.raises(ValueError, match="consistent tensor shapes"):
             meter.update(torch.tensor([[1.0, 2.0]]))
 
-    def test_zero_count_scalar_preserves_tensor_state(self):
+    def test_zero_count_scalar(self):
         meter = AverageMeter()
         meter.update(torch.tensor([1.0, 2.0]), n=2)
 
@@ -206,20 +206,14 @@ class TestAverageMeter:
         assert_close(meter.sum, torch.tensor([2.0, 4.0], dtype=torch.float64))
         assert_close(meter.avg, torch.tensor([1.0, 2.0], dtype=torch.float64))
 
-    def test_batch_is_local(self):
+    def test_local_statistics(self):
         meter = AverageMeter(device="cpu", distributed=False)
         meter.update(2.0, n=2)
         meter.update(4.0, n=1)
-
         assert meter.bat == 4.0
         assert meter.batch() == 4.0
-
-    def test_average_is_local(self):
-        meter = AverageMeter(device="cpu", distributed=False)
-        meter.update(2.0, n=2)
-        meter.update(4.0, n=1)
-
         assert meter.average() == pytest.approx(8.0 / 3.0)
+        assert f"{meter:.2f}" == "4.00 (2.67)"
 
     def test_sync_across_ranks(self):
         run_distributed(_distributed_average_meter_scalar_worker, world_size=2)
@@ -233,13 +227,6 @@ class TestAverageMeter:
 
     def test_distributed_zero_count_returns_nan(self):
         run_distributed(_distributed_average_meter_zero_count_worker, world_size=2)
-
-    def test_format_uses_local_value_and_average(self):
-        meter = AverageMeter(device="cpu", distributed=False)
-        meter.update(2.0, n=2)
-        meter.update(4.0, n=1)
-
-        assert f"{meter:.2f}" == "4.00 (2.67)"
 
 
 class TestAverageMeters:

@@ -46,7 +46,8 @@ from danling.runners.config import (
 )
 
 
-def _checkpoint_fault_tolerance_config() -> RunnerConfig:
+@pytest.fixture
+def checkpoint_config() -> RunnerConfig:
     return RunnerConfig(
         {
             "ckpt": {
@@ -74,12 +75,12 @@ def _checkpoint_fault_tolerance_config() -> RunnerConfig:
 
 
 @pytest.mark.parametrize("mode", ["auto", "MIN", "minimize"])
-def test_runner_config_rejects_unknown_score_direction(mode) -> None:
+def test_rejects_unknown_score_direction(mode) -> None:
     with pytest.raises(ValueError, match="score.mode"):
         RunnerConfig({"score.mode": mode})
 
 
-def test_runner_config_validates_score_direction_after_cli_overrides() -> None:
+def test_cli_score_direction() -> None:
     config = RunnerConfig()
     config.parse(["--score.mode", "min"])
     assert config.score.mode == "min"
@@ -87,7 +88,8 @@ def test_runner_config_validates_score_direction_after_cli_overrides() -> None:
         RunnerConfig().parse(["--score.mode", "auto"])
 
 
-def _fsdp_parallel_config() -> RunnerConfig:
+@pytest.fixture
+def parallel_config() -> RunnerConfig:
     return RunnerConfig(
         {
             "parallel": {
@@ -119,7 +121,7 @@ def _fsdp_parallel_config() -> RunnerConfig:
     )
 
 
-def test_runner_config_identity_ignores_inactive_parallel_settings() -> None:
+def test_identity_ignores_inactive_parallel_settings() -> None:
     config_a = RunnerConfig(
         {
             "logging.enabled": False,
@@ -144,7 +146,7 @@ def test_runner_config_identity_ignores_inactive_parallel_settings() -> None:
     assert config_a.canonical() == config_b.canonical()
 
 
-def test_runner_config_identity_ignores_fault_tolerance_runtime_policy() -> None:
+def test_identity_ignores_ft_runtime() -> None:
     config_a = RunnerConfig(
         {
             "logging.enabled": False,
@@ -182,7 +184,7 @@ def test_runner_config_identity_ignores_fault_tolerance_runtime_policy() -> None
     assert config_a.fingerprint() == config_b.fingerprint()
 
 
-def test_runner_config_exposes_runtime_sections() -> None:
+def test_exposes_runtime_sections() -> None:
     config = RunnerConfig()
     assert config.score.mode is None
     assert config.evaluation.interval == 0
@@ -232,7 +234,7 @@ def test_runner_config_exposes_runtime_sections() -> None:
     assert configured.ddp.static_graph is True
 
 
-def test_runner_config_keeps_training_sections_optional() -> None:
+def test_keeps_training_sections_optional() -> None:
     config = RunnerConfig()
 
     assert config.get("optim") is None
@@ -247,7 +249,7 @@ def test_runner_config_keeps_training_sections_optional() -> None:
     assert "sched" not in explicit_none.canonical()
 
 
-def test_runner_config_identity_omits_default_runtime_sections() -> None:
+def test_identity_omits_default_runtime_sections() -> None:
     canonical = RunnerConfig().canonical()
 
     assert "compile" not in canonical
@@ -256,7 +258,7 @@ def test_runner_config_identity_omits_default_runtime_sections() -> None:
     assert "fp8" not in canonical
 
 
-def test_runner_config_identity_keeps_explicit_none_values() -> None:
+def test_identity_keeps_explicit_none_values() -> None:
     config = RunnerConfig(
         {
             "optim": {
@@ -290,7 +292,7 @@ def test_runner_config_identity_keeps_explicit_none_values() -> None:
     assert canonical["dataloader"] == {"batch_size": 8, "train": {"shuffle": None, "drop_last": False}}
 
 
-def test_runner_config_accepts_compile_options() -> None:
+def test_accepts_compile_options() -> None:
     config = RunnerConfig(
         {
             "compile": {
@@ -312,7 +314,7 @@ def test_runner_config_accepts_compile_options() -> None:
     assert config.compile.memory_policy == "cpu_offload_all"
 
 
-def test_runner_config_accepts_common_training_options() -> None:
+def test_accepts_common_training_options() -> None:
     config = RunnerConfig(
         {
             "optim": {
@@ -412,7 +414,7 @@ def test_runner_config_accepts_common_training_options() -> None:
     assert config.dataloader.collate_fn == "collate-a"
 
 
-def test_runner_config_accepts_dataloader_options() -> None:
+def test_accepts_dataloader_options() -> None:
     config = RunnerConfig(
         {
             "dataloader": {
@@ -441,7 +443,7 @@ def test_runner_config_accepts_dataloader_options() -> None:
     assert dict(config.dataloader.val) == {"drop_last": False}
 
 
-def test_runner_config_preserves_explicit_dataloader_options() -> None:
+def test_preserves_explicit_dataloader_options() -> None:
     config = RunnerConfig({"dataloader": {"batch_size": 8}})
 
     assert isinstance(config.dataloader, DataloaderConfig)
@@ -449,39 +451,39 @@ def test_runner_config_preserves_explicit_dataloader_options() -> None:
     assert config.canonical()["dataloader"] == {"batch_size": 8}
 
 
-def test_runner_config_accepts_async_checkpoint_options() -> None:
-    config = _checkpoint_fault_tolerance_config()
+def test_accepts_async_checkpoint_options(checkpoint_config) -> None:
+    config = checkpoint_config
 
     assert config["ckpt"].async_mode == "async_with_pinned_mem"
     assert config["ckpt"].dedicated_async_process_group is False
     assert config["ckpt"].async_process_group_backend == "gloo"
 
 
-def test_runner_config_accepts_dataloader_checkpoint_options() -> None:
-    config = _checkpoint_fault_tolerance_config()
+def test_accepts_dataloader_checkpoint_options(checkpoint_config) -> None:
+    config = checkpoint_config
 
     assert config["ckpt"].dataloader_checkpoint.enabled is True
     assert config["ckpt"].dataloader_checkpoint.replica_id == "replica-a"
     assert config["ckpt"].dataloader_checkpoint.prefix == "ft-loader"
 
 
-def test_runner_config_accepts_checkpoint_export_options() -> None:
-    config = _checkpoint_fault_tolerance_config()
+def test_accepts_checkpoint_export_options(checkpoint_config) -> None:
+    config = checkpoint_config
 
     assert config["ckpt"].export_dtype == "bf16"
     assert config.canonical()["ckpt"] == {"backend": "dcp"}
 
 
-def test_runner_config_accepts_fault_tolerance_options() -> None:
-    config = _checkpoint_fault_tolerance_config()
+def test_accepts_fault_tolerance_options(checkpoint_config) -> None:
+    config = checkpoint_config
 
     assert config.ft.process_group_timeout_seconds == 1.234
     assert config.ft.replica_id == 1
     assert config.ft.group_size == 2
 
 
-def test_runner_config_accepts_parallel_axis_options() -> None:
-    config = _fsdp_parallel_config()
+def test_accepts_parallel_axis_options(parallel_config) -> None:
+    config = parallel_config
 
     assert config.parallel.axes.replicate == 2
     assert config.parallel.axes.shard == 4
@@ -492,8 +494,8 @@ def test_runner_config_accepts_parallel_axis_options() -> None:
     assert config.parallel.axes.expert_tensor == 1
 
 
-def test_runner_config_accepts_parallel_runtime_options() -> None:
-    config = _fsdp_parallel_config()
+def test_accepts_parallel_runtime_options(parallel_config) -> None:
+    config = parallel_config
 
     assert config.parallel.use_device_mesh is False
     assert config.parallel.mesh_device_type == "cuda"
@@ -502,8 +504,8 @@ def test_runner_config_accepts_parallel_runtime_options() -> None:
     assert config.parallel.loss_parallel is False
 
 
-def test_runner_config_accepts_fsdp_options() -> None:
-    config = _fsdp_parallel_config()
+def test_accepts_fsdp_options(parallel_config) -> None:
+    config = parallel_config
 
     assert list(config.fsdp.module_classes) == ["TransformerBlock"]
     assert config.fsdp.reshard_after_forward == "default"
@@ -523,3 +525,9 @@ def test_config_fingerprint_tracks_content():
     assert config.fingerprint() != fingerprint
     with pytest.raises(TypeError, match="unhashable"):
         hash(config)
+
+
+@pytest.mark.parametrize("options", [["trace"], "trace"])
+def test_compile_options_require_mapping(options):
+    with pytest.raises(TypeError, match="options"):
+        CompileConfig({"options": options})

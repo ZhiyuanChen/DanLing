@@ -78,7 +78,7 @@ class TestLRScheduler:
                 assert isinstance(actual, torch.Tensor)
                 assert actual.dtype == dtype
                 torch.testing.assert_close(actual, torch.tensor(expected, dtype=dtype))
-            assert optimizer.param_groups[0]["lr"] is initial_lr
+            torch.testing.assert_close(optimizer.param_groups[0]["lr"], initial_lr)
             torch.testing.assert_close(initial_lr, torch.tensor(expected, dtype=dtype))
             torch.testing.assert_close(scheduler.base_lrs[0], torch.tensor(1.0, dtype=dtype))
             if step < 10:

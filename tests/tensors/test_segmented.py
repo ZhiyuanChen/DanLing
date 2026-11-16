@@ -41,34 +41,19 @@ def lengths_case(shape_fn):
 
 class TestSegmentedSortPerm:
 
-    @pytest.mark.parametrize("descending", [False, True])
-    def test_matches_per_element_argsort(self, descending):
-        nested = lengths_case(lambda length: (length,))
-        offsets = nested.packed_offsets()
-
+    @pytest.mark.parametrize(
+        ("descending", "tail"), [(False, ()), (True, ()), (False, (4,))], ids=["ascending", "descending", "columns"]
+    )
+    def test_argsort(self, descending, tail):
+        nested = lengths_case(lambda length: (length, *tail))
         permutation, local_indices = segmented_sort_perm(
-            nested.values(),
-            offsets,
-            nested.packed_batch_indices(),
-            descending=descending,
+            nested.values(), nested.packed_offsets(), nested.packed_batch_indices(), descending=descending
         )
-
-        expected_indices = torch.cat([torch.argsort(element, stable=True, descending=descending) for element in nested])
-        expected_values = torch.cat(
-            [torch.sort(element, stable=True, descending=descending).values for element in nested]
+        expected = [torch.sort(element, dim=0, stable=True, descending=descending) for element in nested]
+        torch.testing.assert_close(local_indices, torch.cat([item.indices for item in expected]))
+        torch.testing.assert_close(
+            torch.gather(nested.values(), 0, permutation), torch.cat([item.values for item in expected])
         )
-        assert torch.equal(local_indices, expected_indices)
-        torch.testing.assert_close(nested.values()[permutation], expected_values)
-
-    def test_sorts_each_static_tail_column(self):
-        nested = lengths_case(lambda length: (length, 4))
-        _, local_indices = segmented_sort_perm(
-            nested.values(),
-            nested.packed_offsets(),
-            nested.packed_batch_indices(),
-        )
-        expected = torch.cat([torch.argsort(element, dim=0, stable=True) for element in nested])
-        assert torch.equal(local_indices, expected)
 
     def test_is_stable_on_ties(self):
         nested = NestedTensor([torch.zeros(3), torch.zeros(4)])
@@ -82,13 +67,12 @@ class TestSegmentedSortPerm:
 
 class TestAlignRows:
 
-    def test_broadcasts_by_row_across_a_static_tail(self):
+    @pytest.mark.parametrize("shape", [(5,), (5, 5, 2)])
+    def test_static_tail(self, shape):
         rows = torch.arange(5)
-        aligned = align_rows(rows, torch.randn(5, 5, 2))
-
-        assert aligned.shape == (5, 5, 2)
-        assert torch.equal(aligned, rows.view(5, 1, 1).expand(5, 5, 2))
-        assert torch.equal(align_rows(rows, torch.randn(5)), rows)
+        aligned = align_rows(rows, torch.randn(shape))
+        expected = rows.view(5, *([1] * (len(shape) - 1))).expand(shape)
+        torch.testing.assert_close(aligned, expected)
 
 
 class TestSegmentedScan:
@@ -109,7 +93,7 @@ class TestSegmentedScan:
         torch.testing.assert_close(output, torch.cat([reference(element) for element in nested]))
 
     @pytest.mark.parametrize("largest", [False, True], ids=["cummin", "cummax"])
-    def test_arg_scan_matches_values_and_indices(self, largest):
+    def test_arg_scan_indices(self, largest):
         nested = lengths_case(lambda length: (length, 4))
 
         values, indices = segmented_arg_scan(
@@ -124,7 +108,7 @@ class TestSegmentedScan:
         assert torch.equal(indices, torch.cat([reference.indices for reference in references]))
 
     @pytest.mark.parametrize("largest", [False, True], ids=["cummin", "cummax"])
-    def test_arg_scan_matches_ties_and_nan_semantics(self, largest):
+    def test_arg_scan_ties_nan(self, largest):
         nested = NestedTensor(
             [
                 torch.tensor([0.0, 0.0, float("nan"), 2.0]),
@@ -636,7 +620,7 @@ class TestSegmentedHigherDerivatives:
         assert torch.autograd.gradcheck(run, (cotangent, left, right, distances), fast_mode=True)
 
     @pytest.mark.parametrize("operation", ["cumprod", "cdist"])
-    def test_compiled_forward_preserves_native_third_derivatives(self, device, operation):
+    def test_compiled_third_derivatives(self, device, operation):
         values = torch.tensor([0.0, 2.0, 3.0, 4.0, 5.0], dtype=torch.float64, device=device, requires_grad=True)
         reference = values.detach().clone().requires_grad_()
         offsets = torch.tensor([0, 3, 5])

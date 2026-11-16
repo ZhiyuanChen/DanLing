@@ -37,29 +37,16 @@ ATOL = 1e-6
 
 
 class TestBasePreprocess:
-    def test_idempotent_for_dense_tensors(self):
-        input_tensor = torch.tensor([0.1, 0.5, 0.9])
-        target_tensor = torch.tensor([0, 1, 1])
-
-        once_input, once_target = base_preprocess(input_tensor, target_tensor)
-        twice_input, twice_target = base_preprocess(once_input, once_target)
-
-        assert torch.allclose(twice_input, once_input)
-        assert torch.allclose(twice_target, once_target)
-
-    def test_preserves_tensor_inputs(self):
-        input_tensor = torch.tensor([0.1, 0.5, 0.9])
-        target_tensor = torch.tensor([0, 1, 1])
-        processed_input, processed_target = base_preprocess(input_tensor, target_tensor)
-        assert torch.allclose(processed_input, input_tensor)
-        assert torch.allclose(processed_target, target_tensor)
-
-    def test_converts_list_inputs(self):
-        input_list = [0.1, 0.5, 0.9]
-        target_list = [0, 1, 1]
-        processed_input, processed_target = base_preprocess(input_list, target_list)
-        assert torch.allclose(processed_input, torch.tensor(input_list))
-        assert torch.allclose(processed_target, torch.tensor(target_list))
+    @pytest.mark.parametrize("tensor", [True, False], ids=["tensor", "list"])
+    @pytest.mark.parametrize(
+        "inputs,targets", [([0.1, 0.5, 0.9], [0, 1, 1]), ([[0.1, 0.2], [0.3, 0.4]], [[0, 1], [1, 0]])]
+    )
+    def test_dense_inputs(self, tensor, inputs, targets):
+        expected = torch.tensor(inputs), torch.tensor(targets)
+        source = expected if tensor else (inputs, targets)
+        actual = base_preprocess(*source)
+        torch.testing.assert_close(actual, expected)
+        torch.testing.assert_close(base_preprocess(*actual), actual)
 
     def test_applies_ignore_index(self):
         input_tensor = torch.tensor([0.1, 0.5, 0.9, 0.3])
@@ -86,22 +73,13 @@ class TestBasePreprocess:
         assert torch.allclose(processed_input, input_nested.values())
         assert torch.allclose(processed_target, target_nested.values())
 
-    def test_rejects_mismatched_dense_and_nested_inputs(self):
+    def test_mismatched_inputs(self):
         input_nested = NestedTensor([torch.tensor([0.1, 0.2]), torch.tensor([0.3, 0.4, 0.5])])
         target_tensor = torch.tensor([0, 1, 1, 0, 1])
         with raises(ValueError):
             base_preprocess(input_nested, target_tensor)
 
-    def test_converts_nested_lists_to_dense_tensors(self):
-        input_list = [[0.1, 0.2], [0.3, 0.4]]
-        target_list = [[0, 1], [1, 0]]
-        processed_input, processed_target = base_preprocess(input_list, target_list)
-        assert isinstance(processed_input, torch.Tensor)
-        assert isinstance(processed_target, torch.Tensor)
-        assert processed_input.shape == torch.Size([2, 2])
-        assert processed_target.shape == torch.Size([2, 2])
-
-    def test_handles_dense_inputs_with_nested_targets(self):
+    def test_dense_nested_targets(self):
         input_batch_tensor = torch.tensor([[0.1, 0.2, 0.0], [0.3, 0.4, 0.5]])
         target_nested = NestedTensor([torch.tensor([0, 1]), torch.tensor([1, 0, 1])])
         expected_result = torch.cat([input_batch_tensor[0, :2], input_batch_tensor[1, :3]])
@@ -109,7 +87,7 @@ class TestBasePreprocess:
         assert torch.allclose(processed_input, expected_result)
         assert torch.allclose(processed_target, target_nested.values())
 
-    def test_flattens_dense_and_nested_batches_equivalently(self):
+    def test_dense_nested_alignment(self):
         input_nested = NestedTensor([torch.tensor([0.1, 0.2]), torch.tensor([0.3, 0.4, 0.5])])
         target_nested = NestedTensor([torch.tensor([0, 1]), torch.tensor([1, 0, 1])])
 
@@ -145,7 +123,7 @@ class TestRegressionPreprocess:
         assert processed_input.shape == torch.Size([2, 3])
         assert processed_target.shape == torch.Size([2, 3])
 
-    def test_ignore_nan_filters_single_output_elements(self):
+    def test_single_output_nan(self):
         input_tensor = torch.tensor([0.1, 0.2, 0.3])
         target_tensor = torch.tensor([0.1, 0.2, float("nan")])
         processed_input, processed_target = preprocess_regression(input_tensor, target_tensor, ignore_nan=True)
@@ -154,7 +132,7 @@ class TestRegressionPreprocess:
         assert torch.allclose(processed_input, torch.tensor([0.1, 0.2]))
         assert torch.allclose(processed_target, torch.tensor([0.1, 0.2]))
 
-    def test_multioutput_drops_rows_with_nan_targets(self):
+    def test_multioutput_nan_rows(self):
         input_tensor = torch.tensor([[1.0, 10.0], [2.0, 20.0], [3.0, 30.0]])
         target_tensor = torch.tensor([[1.0, float("nan")], [2.0, 20.0], [float("nan"), 30.0]])
 
@@ -170,21 +148,7 @@ class TestRegressionPreprocess:
         assert torch.allclose(processed_input, torch.tensor([[2.0, 20.0]]))
         assert torch.allclose(processed_target, torch.tensor([[2.0, 20.0]]))
 
-    def test_multioutput_all_nan_rows_return_empty(self):
-        input_tensor = torch.tensor([[1.0, 10.0], [2.0, 20.0]])
-        target_tensor = torch.tensor([[float("nan"), 10.0], [2.0, float("nan")]])
-
-        processed_input, processed_target = preprocess_regression(
-            input_tensor,
-            target_tensor,
-            num_outputs=2,
-            ignore_nan=True,
-        )
-
-        assert processed_input.shape == torch.Size([0, 2])
-        assert processed_target.shape == torch.Size([0, 2])
-
-    def test_ignore_nan_false_preserves_rows_and_nans(self):
+    def test_retain_nan_rows(self):
         input_tensor = torch.tensor([[1.0, 10.0], [2.0, 20.0]])
         target_tensor = torch.tensor([[1.0, float("nan")], [2.0, 20.0]])
 
@@ -221,24 +185,13 @@ class TestRegressionPreprocess:
 
 
 class TestBinaryPreprocess:
-    def test_idempotent_for_probabilities(self):
-        input_tensor = torch.tensor([0.1, 0.7, 0.4])
-        target_tensor = torch.tensor([0, 1, 0])
-
-        once_input, once_target = preprocess_binary(input_tensor, target_tensor)
-        twice_input, twice_target = preprocess_binary(once_input, once_target)
-
-        assert torch.allclose(twice_input, once_input)
-        assert torch.allclose(twice_target, once_target)
-
-    def test_preserves_probabilities(self):
-        input_tensor = torch.tensor([0.1, 0.7, 0.4])
-        target_tensor = torch.tensor([0, 1, 0])
-        processed_input, processed_target = preprocess_binary(input_tensor, target_tensor)
-        assert processed_input.shape == torch.Size([3])
-        assert processed_target.shape == torch.Size([3])
-        assert torch.allclose(processed_input, input_tensor)
-        assert torch.allclose(processed_target, target_tensor)
+    def test_probabilities(self):
+        inputs = torch.tensor([0.1, 0.7, 0.4])
+        targets = torch.tensor([0, 1, 0])
+        actual = preprocess_binary(inputs, targets)
+        repeated = preprocess_binary(*actual)
+        torch.testing.assert_close(actual, (inputs, targets))
+        torch.testing.assert_close(repeated, actual)
 
     def test_normalizes_logits(self):
         input_tensor = torch.tensor([-1.0, 2.0, 0.5])
@@ -260,24 +213,13 @@ class TestBinaryPreprocess:
 
 
 class TestMulticlassPreprocess:
-    def test_idempotent_for_normalized_probabilities(self):
-        input_tensor = torch.tensor([[0.1, 0.7, 0.2], [0.3, 0.3, 0.4], [0.6, 0.3, 0.1]])
-        target_tensor = torch.tensor([1, 2, 0])
-
-        once_input, once_target = preprocess_multiclass(input_tensor, target_tensor, num_classes=3)
-        twice_input, twice_target = preprocess_multiclass(once_input, once_target, num_classes=3)
-
-        assert torch.allclose(twice_input, once_input)
-        assert torch.allclose(twice_target, once_target)
-
-    def test_preserves_probability_inputs(self):
-        input_tensor = torch.tensor([[0.1, 0.7, 0.2], [0.3, 0.3, 0.4], [0.6, 0.3, 0.1]])
-        target_tensor = torch.tensor([1, 2, 0])
-        processed_input, processed_target = preprocess_multiclass(input_tensor, target_tensor, num_classes=3)
-        assert processed_input.shape == torch.Size([3, 3])
-        assert processed_target.shape == torch.Size([3])
-        assert torch.allclose(processed_input, input_tensor)
-        assert torch.allclose(processed_target, target_tensor)
+    def test_probabilities(self):
+        inputs = torch.tensor([[0.1, 0.7, 0.2], [0.3, 0.3, 0.4], [0.6, 0.3, 0.1]])
+        targets = torch.tensor([1, 2, 0])
+        actual = preprocess_multiclass(inputs, targets, num_classes=3)
+        repeated = preprocess_multiclass(*actual, num_classes=3)
+        torch.testing.assert_close(actual, (inputs, targets))
+        torch.testing.assert_close(repeated, actual)
 
     def test_normalizes_logits(self):
         input_tensor = torch.tensor([[-1.0, 2.0, 0.5], [0.0, -3.0, 1.0], [1.0, 2.0, -1.0]])
@@ -313,26 +255,28 @@ class TestMulticlassPreprocess:
         assert torch.allclose(processed_input, input_tensor.softmax(dim=-1))
         assert torch.allclose(processed_target, target_tensor)
 
+    @pytest.mark.parametrize(
+        "scores,labels,class_dim",
+        [
+            ([[[10.0, 0.0, 10.0], [0.0, 10.0, 0.0]]], [[0, 1, 0]], None),
+            ([[[9.0, 8.0], [10.0, 7.0]]], [[1, 0]], 1),
+        ],
+        ids=["inferred", "explicit"],
+    )
+    def test_class_axis(self, scores, labels, class_dim):
+        options = {} if class_dim is None else {"class_dim": class_dim}
+        preds, target = preprocess_multiclass(torch.tensor(scores), torch.tensor(labels), num_classes=2, **options)
+        torch.testing.assert_close(preds.argmax(-1), target)
+
 
 class TestMultilabelPreprocess:
-    def test_idempotent_for_probabilities(self):
-        input_tensor = torch.tensor([[0.1, 0.7, 0.2], [0.3, 0.3, 0.4], [0.6, 0.3, 0.1]])
-        target_tensor = torch.tensor([[0, 1, 0], [1, 0, 1], [1, 0, 0]])
-
-        once_input, once_target = preprocess_multilabel(input_tensor, target_tensor, num_labels=3)
-        twice_input, twice_target = preprocess_multilabel(once_input, once_target, num_labels=3)
-
-        assert torch.allclose(twice_input, once_input)
-        assert torch.allclose(twice_target, once_target)
-
-    def test_preserves_probability_inputs(self):
-        input_tensor = torch.tensor([[0.1, 0.7, 0.2], [0.3, 0.3, 0.4], [0.6, 0.3, 0.1]])
-        target_tensor = torch.tensor([[0, 1, 0], [1, 0, 1], [1, 0, 0]])
-        processed_input, processed_target = preprocess_multilabel(input_tensor, target_tensor, num_labels=3)
-        assert processed_input.shape == torch.Size([3, 3])
-        assert processed_target.shape == torch.Size([3, 3])
-        assert torch.allclose(processed_input, input_tensor)
-        assert torch.allclose(processed_target, target_tensor)
+    def test_probabilities(self):
+        inputs = torch.tensor([[0.1, 0.7, 0.2], [0.3, 0.3, 0.4], [0.6, 0.3, 0.1]])
+        targets = torch.tensor([[0, 1, 0], [1, 0, 1], [1, 0, 0]])
+        actual = preprocess_multilabel(inputs, targets, num_labels=3)
+        repeated = preprocess_multilabel(*actual, num_labels=3)
+        torch.testing.assert_close(actual, (inputs, targets))
+        torch.testing.assert_close(repeated, actual)
 
     def test_normalizes_logits(self):
         input_tensor = torch.tensor([[-1.0, 2.0, 0.5], [0.0, -3.0, 1.0], [1.0, 2.0, -1.0]])
@@ -343,7 +287,7 @@ class TestMultilabelPreprocess:
         assert (processed_input >= 0.0).all() and (processed_input <= 1.0).all()
         assert torch.allclose(processed_target, target_tensor)
 
-    def test_ignore_index_drops_fully_ignored_rows(self):
+    def test_fully_ignored_rows(self):
         input_tensor = torch.tensor([[0.1, 0.7, 0.2], [0.3, 0.3, 0.4], [0.6, 0.3, 0.1]])
         target_tensor = torch.tensor([[0, -100, 0], [-100, -100, -100], [1, 0, 0]])
         processed_input, processed_target = preprocess_multilabel(
@@ -434,46 +378,23 @@ class TestClassificationPreprocess:
 
 
 class TestTaskPreprocessors:
-    def test_return_empty_tensors_for_all_ignored_batches(self):
-        binary_input, binary_target = preprocess_binary(
-            torch.randn(4),
-            torch.full((4,), -100),
-            ignore_index=-100,
-        )
-        assert binary_input.shape == binary_target.shape == torch.Size([0])
-
-        multiclass_input, multiclass_target = preprocess_multiclass(
-            torch.randn(4, 3),
-            torch.full((4,), -100),
-            num_classes=3,
-            ignore_index=-100,
-        )
-        assert multiclass_input.shape == torch.Size([0, 3])
-        assert multiclass_target.shape == torch.Size([0])
-
-        multilabel_input, multilabel_target = preprocess_multilabel(
-            torch.randn(4, 2),
-            torch.full((4, 2), -100),
-            num_labels=2,
-            ignore_index=-100,
-        )
-        assert multilabel_input.shape == torch.Size([0, 2])
-        assert multilabel_target.shape == torch.Size([0, 2])
-
-        regression_input, regression_target = preprocess_regression(
-            torch.randn(2, 3),
-            torch.tensor([[1.0, float("nan"), 2.0], [3.0, 4.0, 5.0]]),
-            num_outputs=3,
-            ignore_nan=True,
-        )
-        assert regression_input.shape == regression_target.shape
-
-
-def test_multiclass_class_axis_is_aligned_to_target_geometry():
-    scores = torch.tensor([[[10.0, 0.0, 10.0], [0.0, 10.0, 0.0]]])
-    labels = torch.tensor([[0, 1, 0]])
-    preds, target = preprocess_multiclass(scores, labels, num_classes=2)
-    assert torch.equal(preds.argmax(-1), target)
-    ambiguous = torch.tensor([[[9.0, 8.0], [10.0, 7.0]]])
-    preds, target = preprocess_multiclass(ambiguous, torch.tensor([[1, 0]]), num_classes=2, class_dim=1)
-    assert torch.equal(preds.argmax(-1), target)
+    @pytest.mark.parametrize(
+        "preprocess,options,input_shape,target_shape,ignored,expected_shapes",
+        [
+            (preprocess_binary, {"ignore_index": -100}, (4,), (4,), -100, ((0,), (0,))),
+            (preprocess_multiclass, {"num_classes": 3, "ignore_index": -100}, (4, 3), (4,), -100, ((0, 3), (0,))),
+            (preprocess_multilabel, {"num_labels": 2, "ignore_index": -100}, (4, 2), (4, 2), -100, ((0, 2), (0, 2))),
+            (
+                preprocess_regression,
+                {"num_outputs": 2, "ignore_nan": True},
+                (2, 2),
+                (2, 2),
+                float("nan"),
+                ((0, 2), (0, 2)),
+            ),
+        ],
+        ids=["binary", "multiclass", "multilabel", "regression"],
+    )
+    def test_ignored_batches(self, preprocess, options, input_shape, target_shape, ignored, expected_shapes):
+        actual = preprocess(torch.randn(input_shape), torch.full(target_shape, ignored), **options)
+        assert tuple(tuple(value.shape) for value in actual) == expected_shapes

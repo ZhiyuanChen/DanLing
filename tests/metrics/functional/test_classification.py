@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -96,6 +97,19 @@ def assert_metric_close(actual: Tensor | float, expected: Tensor | float) -> Non
         atol=ATOL,
         check_dtype=False,
     )
+
+
+@pytest.fixture(
+    params=[
+        ("binary", BINARY_PREDS, BINARY_TARGETS, {}, 0),
+        ("multiclass", MULTICLASS_PREDS, MULTICLASS_TARGETS, {"num_classes": NUM_CLASSES}, 1),
+        ("multilabel", MULTILABEL_PREDS, MULTILABEL_TARGETS, {"num_labels": NUM_LABELS}, 2),
+    ],
+    ids=["binary", "multiclass", "multilabel"],
+)
+def classification_case(request):
+    task, preds, targets, options, index = request.param
+    return SimpleNamespace(task=task, preds=preds, targets=targets, options=options, index=index)
 
 
 DISPATCH_CASES: list[tuple[str, Callable, dict, Callable, Callable, Callable]] = [
@@ -377,37 +391,17 @@ DISPATCH_CASES: list[tuple[str, Callable, dict, Callable, Callable, Callable]] =
 
 class TestClassificationDispatch:
     @pytest.mark.parametrize(
-        "name,metric_fn,metric_kwargs,expected_binary,expected_multiclass,expected_multilabel",
-        DISPATCH_CASES,
+        "metric_fn,options,references",
+        [
+            pytest.param(metric, options, (binary, multiclass, multilabel), id=name)
+            for name, metric, options, binary, multiclass, multilabel in DISPATCH_CASES
+        ],
     )
-    def test_function_dispatch(
-        self,
-        name: str,
-        metric_fn: Callable,
-        metric_kwargs: dict,
-        expected_binary: Callable,
-        expected_multiclass: Callable,
-        expected_multilabel: Callable,
-    ):
-        del name
-        actual_binary = metric_fn(BINARY_PREDS, BINARY_TARGETS, **metric_kwargs)
-        assert_metric_close(actual_binary, expected_binary(BINARY_PREDS, BINARY_TARGETS))
-
-        actual_multiclass = metric_fn(
-            MULTICLASS_PREDS,
-            MULTICLASS_TARGETS,
-            num_classes=NUM_CLASSES,
-            **metric_kwargs,
-        )
-        assert_metric_close(actual_multiclass, expected_multiclass(MULTICLASS_PREDS, MULTICLASS_TARGETS))
-
-        actual_multilabel = metric_fn(
-            MULTILABEL_PREDS,
-            MULTILABEL_TARGETS,
-            num_labels=NUM_LABELS,
-            **metric_kwargs,
-        )
-        assert_metric_close(actual_multilabel, expected_multilabel(MULTILABEL_PREDS, MULTILABEL_TARGETS))
+    def test_values(self, classification_case, metric_fn, options, references):
+        case = classification_case
+        actual = metric_fn(case.preds, case.targets, **case.options, **options)
+        expected = references[case.index](case.preds, case.targets)
+        assert_metric_close(actual, expected)
 
     @pytest.mark.parametrize(
         "metric_fn,metric_kwargs",
@@ -431,11 +425,11 @@ class TestClassificationDispatch:
             metric_fn(BINARY_PREDS, BINARY_TARGETS, task="invalid", **metric_kwargs)
 
     @pytest.mark.parametrize("average", [None, "micro", "weighted"])
-    def test_multiclass_balanced_accuracy_rejects_non_macro_average(self, average) -> None:
+    def test_balanced_average_error(self, average) -> None:
         with pytest.raises(ValueError, match="only supports average='macro'"):
             balanced_accuracy(MULTICLASS_PREDS, MULTICLASS_TARGETS, num_classes=NUM_CLASSES, average=average)
 
-    def test_multiclass_balanced_accuracy_rejects_top_k(self) -> None:
+    def test_balanced_topk_error(self) -> None:
         with pytest.raises(ValueError, match="only supports k=1"):
             balanced_accuracy(MULTICLASS_PREDS, MULTICLASS_TARGETS, num_classes=NUM_CLASSES, k=2)
 
@@ -742,16 +736,14 @@ class TestClassificationPreprocess:
 
 
 class TestMatthewsCorrcoef:
-    def test_metric_func(self):
-        for task, preds, targets, kwargs in [
-            ("binary", BINARY_PREDS, BINARY_TARGETS, {}),
-            ("multiclass", MULTICLASS_PREDS, MULTICLASS_TARGETS, {"num_classes": NUM_CLASSES}),
-            ("multilabel", MULTILABEL_PREDS, MULTILABEL_TARGETS, {"num_labels": NUM_LABELS}),
-        ]:
-            metric = mcc(task=task, **kwargs)
-            state = MetricState(preds=preds, targets=targets)
-            expected = tmfc.matthews_corrcoef(preds, targets, task=task, threshold=0.5, ignore_index=-100, **kwargs)
-            assert_metric_close(metric(state), expected)
+    def test_values(self, classification_case):
+        case = classification_case
+        metric = mcc(task=case.task, **case.options)
+        state = MetricState(preds=case.preds, targets=case.targets)
+        expected = tmfc.matthews_corrcoef(
+            case.preds, case.targets, task=case.task, threshold=0.5, ignore_index=-100, **case.options
+        )
+        assert_metric_close(metric(state), expected)
 
     def test_returns_nan_on_empty_state(self):
         metric = mcc(task="binary")

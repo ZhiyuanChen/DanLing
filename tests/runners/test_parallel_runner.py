@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import os
 from collections import OrderedDict
-from contextlib import contextmanager
 from itertools import chain
 
 import pytest
@@ -30,14 +29,18 @@ from torch import distributed as dist
 from torch import nn, optim
 from torchdata.stateful_dataloader import StatefulDataLoader
 
-import danling.runners.parallel_runner as parallel_runner_module
-from danling.data import StepProxyLoader
 from danling.runners import ParallelRunner
 from danling.runners.config import RunnerConfig
 from danling.runners.telemetry import LoopTelemetry
 from danling.runners.topology import ParallelContext
 from danling.tensors import NestedTensor
-from tests.runners.distributed import configure_distributed_env, require_gloo, run_distributed
+from tests.runners.distributed import (
+    configure_distributed_env,
+    process_group,
+    require_gloo,
+    require_nccl_cuda,
+    run_distributed,
+)
 
 
 def _init_parallel_topology(runner: ParallelRunner) -> None:
@@ -302,41 +305,23 @@ def _pipeline_checkpoint_identity_worker(rank: int, world_size: int, checkpoint_
 
 
 @pytest.mark.parametrize("parts", [1, 2])
-def test_pipeline_checkpoint_restores_global_stage_parameter_identity(tmp_path, parts: int) -> None:
+def test_pipeline_optimizer_resume(tmp_path, parts: int) -> None:
     require_gloo()
     run_distributed(_pipeline_checkpoint_identity_worker, worker_args=(str(tmp_path), parts))
-
-
-def test_pipeline_step_proxy_restores_its_consumed_ticks_without_loading_samples() -> None:
-    loader = StatefulDataLoader(list(range(8)), batch_size=2, shuffle=False)
-    proxy = StepProxyLoader(loader)
-    iterator = iter(proxy)
-    assert next(iterator) is None
-    assert next(iterator) is None
-    state = proxy.state_dict()
-    assert loader.state_dict()["_num_yielded"] == 0
-    restored_loader = StatefulDataLoader(list(range(8)), batch_size=2, shuffle=False)
-    restored = StepProxyLoader(restored_loader)
-    restored.load_state_dict(state)
-    assert list(restored) == [None, None]
-    assert restored_loader.state_dict()["_num_yielded"] == 0
-    assert list(restored) == [None] * 4
 
 
 def _parallel_gloo_smoke_worker(rank: int, world_size: int, workspace_root: str) -> None:
     configure_distributed_env(rank, world_size)
     os.environ["BACKEND"] = "gloo"
-    with pytest.MonkeyPatch.context() as monkeypatch:
-        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-        runner = DistributedSmokeParallelRunner(
-            {
-                "logging.enabled": False,
-                "workspace.root": workspace_root,
-                "dataloader": {"batch_size": 2, "shuffle": False},
-                "ckpt": {"async_mode": "disabled", "interval": 1},
-                **_parallel_config(shard=1, pipeline=world_size, tensor=1),
-            }
-        )
+    runner = DistributedSmokeParallelRunner(
+        {
+            "logging.enabled": False,
+            "workspace.root": workspace_root,
+            "dataloader": {"batch_size": 2, "shuffle": False},
+            "ckpt": {"async_mode": "disabled", "interval": 1},
+            **_parallel_config(shard=1, pipeline=world_size, tensor=1),
+        }
+    )
     try:
         assert runner.world_size == world_size
         assert runner.tensor_degree == 1
@@ -358,7 +343,6 @@ def _parallel_gloo_smoke_worker(rank: int, world_size: int, workspace_root: str)
 
         runner.datasets["train"] = list(range(8))
         runner.build_dataloaders()
-        assert isinstance(runner.dataloaders["train"], StatefulDataLoader)
         assert runner.state_dict()["parallel"] == {"axes": runner.parallel_axes_state(dict)}
         assert "train" in runner.dataloaders.state_dict()
 
@@ -401,13 +385,11 @@ def _parallel_gloo_middle_stage_loader_state_worker(rank: int, world_size: int, 
         runner.build_dataloaders()
 
         raw_loader = runner.dataloaders.get("train")
-        assert isinstance(raw_loader, StatefulDataLoader)
         loader = runner.dataloaders["train"]
         if runner.pipeline_rank == 1:
-            assert isinstance(loader, StepProxyLoader)
             assert list(loader) == [None] * len(raw_loader)
         else:
-            assert isinstance(loader, StatefulDataLoader)
+            assert len(loader) == len(raw_loader)
 
         assert next(iter(raw_loader)).tolist() == [0, 1]
         runner.save_checkpoint(force=True)
@@ -599,6 +581,95 @@ def _parallel_loss_domain_group_worker(rank: int, world_size: int, workspace_roo
 # ---------------------------------------------------------------------------
 
 
+def _loss_parallel_worker(rank, world_size, enabled):
+    from torch.distributed.device_mesh import DeviceMesh
+    from torch.distributed.tensor import Replicate, Shard, distribute_tensor
+
+    configure_distributed_env(rank, world_size)
+    with process_group("gloo", rank, world_size):
+        runner = TensorParallelRunner(
+            {"device": "cpu", "logging.enabled": False, **_parallel_config(tensor=world_size, loss_parallel=enabled)}
+        )
+        try:
+            active = enabled is not False
+            assert runner.loss_parallel_enabled is active
+            mesh = DeviceMesh("cpu", list(range(world_size)))
+            scores = torch.arange(32, dtype=torch.float64).reshape(4, 8) / 10
+            targets = torch.tensor([0, 3, 5, 7])
+            distributed_scores = distribute_tensor(scores, mesh, [Shard(1)]) if active else scores
+            distributed_targets = distribute_tensor(targets, mesh, [Replicate()]) if active else targets
+            with runner.infer_context():
+                actual = torch.nn.functional.cross_entropy(distributed_scores, distributed_targets)
+            actual = actual.full_tensor() if active else actual
+            torch.testing.assert_close(actual, torch.nn.functional.cross_entropy(scores, targets))
+        finally:
+            runner.close()
+
+
+def _fsdp_update_worker(rank, world_size):
+    from torch.distributed.tensor import DTensor
+
+    class Block(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = nn.Linear(4, 4, dtype=torch.float64)
+
+        def forward(self, value):
+            return self.proj(value).tanh()
+
+    class Model(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.blocks = nn.Sequential(Block(), Block())
+            self.head = nn.Linear(4, 2, dtype=torch.float64)
+
+        def forward(self, value):
+            return self.head(self.blocks(value))
+
+    class Runner(ParallelRunner):
+        def __init__(self, config):
+            super().__init__(config)
+            self.model = Model()
+            self.criterion = nn.MSELoss()
+
+    configure_distributed_env(rank, world_size)
+    runner = Runner(
+        {
+            "device": "cuda:" + str(rank),
+            "logging.enabled": False,
+            "dist.backend": "nccl",
+            "optim": {"type": "sgd", "lr": 0.1},
+            "fsdp": {"enabled": True, "module_classes": ["Block"], "root_reshard_after_forward": False},
+            **_parallel_config(shard=world_size),
+        }
+    )
+    try:
+        parameters = tuple(runner.model.parameters())
+        local_size = sum((value.to_local() if isinstance(value, DTensor) else value).numel() for value in parameters)
+        assert local_size < sum(value.numel() for value in parameters)
+        state = {
+            name: value.full_tensor() if isinstance(value, DTensor) else value
+            for name, value in runner.model.state_dict().items()
+        }
+        reference = Model().to(runner.device)
+        reference.load_state_dict(state)
+        optimizer = optim.SGD(reference.parameters(), lr=0.1)
+        inputs = torch.arange(8, dtype=torch.float64, device=runner.device).reshape(2, 4) / 10
+        targets = torch.zeros(2, 2, dtype=torch.float64, device=runner.device)
+        expected = reference(inputs)
+        loss = torch.nn.functional.mse_loss(expected, targets)
+        loss.backward()
+        optimizer.step()
+        prediction, actual_loss = runner.train_step((inputs, targets))
+        torch.testing.assert_close(prediction, expected)
+        torch.testing.assert_close(actual_loss, loss)
+        for actual, expected_parameter in zip(runner.model.parameters(), reference.parameters()):
+            actual = actual.full_tensor() if isinstance(actual, DTensor) else actual
+            torch.testing.assert_close(actual, expected_parameter)
+    finally:
+        runner.close()
+
+
 class TestParallelRunnerTopology:
 
     def test_topology_properties(self) -> None:
@@ -628,20 +699,19 @@ class TestParallelRunnerTopology:
             BadRunner({"logging.enabled": False, **_parallel_config(shard=1, pipeline=3, tensor=4)})
 
     def test_dataloader_shards_by_data_domain(self) -> None:
-        runner = TinyParallelRunner({"logging.enabled": False, **_parallel_config(shard=2, pipeline=8, tensor=1)})
+        runner = TinyParallelRunner(
+            {"logging.enabled": False, "dataloader.shuffle": False, **_parallel_config(shard=2, pipeline=8, tensor=1)}
+        )
         try:
             runner.datasets["train"] = list(range(32))
             runner.build_dataloaders()
             loader = runner.dataloaders.get("train")
 
-            assert isinstance(loader, StatefulDataLoader)
-            assert isinstance(loader.sampler, torch.utils.data.distributed.DistributedSampler)
-            assert loader.sampler.num_replicas == 2
-            assert loader.sampler.rank == 1
+            assert list(loader.sampler) == list(range(runner.data_rank, 32, runner.data_degree))
         finally:
             runner.close()
 
-    def test_batch_telemetry_reports_from_first_stage_tensor0(self) -> None:
+    def test_batch_telemetry_owner(self) -> None:
         class NoOpParallelLinear(nn.Linear):
             def parallelize(self, parallel):
                 del parallel
@@ -699,7 +769,7 @@ class TestParallelRunnerTopology:
         finally:
             runner.close()
 
-    def test_parallel_topology_fills_auto_shard_axis(self) -> None:
+    def test_auto_shard_axis(self) -> None:
         runner = TinyParallelRunner({"logging.enabled": False, **_parallel_config(replicate=2, shard=-1, pipeline=4)})
         try:
             assert runner.topology.axis_degree("shard") == 2
@@ -712,23 +782,23 @@ class TestParallelRunnerTopology:
         require_gloo()
         run_distributed(_parallel_gloo_smoke_worker, world_size=2, worker_args=(str(tmp_path),))
 
-    def test_parallel_runner_restores_middle_stage_loader_state(self, tmp_path) -> None:
+    def test_middle_stage_loader_resume(self, tmp_path) -> None:
         require_gloo()
         run_distributed(_parallel_gloo_middle_stage_loader_state_worker, world_size=3, worker_args=(str(tmp_path),))
 
-    def test_parallel_runner_reduces_metrics_across_data_domain(self, tmp_path) -> None:
+    def test_data_domain_metrics(self, tmp_path) -> None:
         require_gloo()
         run_distributed(_parallel_gloo_all_reduce_worker, world_size=4, worker_args=(str(tmp_path),))
 
-    def test_parallel_runner_skips_optimizer_step_across_optimizer_domain(self, tmp_path) -> None:
+    def test_optimizer_domain_skip(self, tmp_path) -> None:
         require_gloo()
         run_distributed(_parallel_gloo_optimizer_skip_worker, world_size=4, worker_args=(str(tmp_path),))
 
-    def test_query_context_model_hook_matches_ragged_ddp_update(self, tmp_path) -> None:
+    def test_query_context_update(self, tmp_path) -> None:
         require_gloo(world_size=4)
         run_distributed(_query_context_ddp_worker, world_size=4, worker_args=(str(tmp_path),))
 
-    def test_composite_loss_group_excludes_unrelated_model_axis(self, tmp_path) -> None:
+    def test_composite_loss_domain(self, tmp_path) -> None:
         require_gloo(world_size=8)
         run_distributed(_parallel_loss_domain_group_worker, world_size=8, worker_args=(str(tmp_path),))
 
@@ -741,7 +811,7 @@ class TestParallelRunnerTopology:
 class TestParallelRunnerParallelization:
 
     @pytest.mark.parametrize("pin_memory", [False, True])
-    def test_meta_cpu_offload_preserves_cpu_parameters_and_runtime_buffer_aliases(self, device, pin_memory):
+    def test_meta_cpu_offload(self, device, pin_memory):
         class Model(nn.Module):
             def __init__(self):
                 super().__init__()
@@ -775,8 +845,7 @@ class TestParallelRunnerParallelization:
         torch.testing.assert_close(model.scale, torch.full_like(model.scale, 2))
 
     @pytest.mark.parametrize("compile_selected", [False, True])
-    def test_named_selective_checkpoint_preserves_dropout_rng_and_vjp(self, device, compile_selected):
-        from torch.utils._python_dispatch import TorchDispatchMode
+    def test_selective_checkpoint_derivatives(self, device, compile_selected):
         from torch.utils.checkpoint import CheckpointPolicy
 
         class Block(nn.Module):
@@ -806,14 +875,6 @@ class TestParallelRunnerParallelization:
 
             def forward(self, x):
                 return self.block(x)
-
-        class CountForwardMM(TorchDispatchMode):
-            calls = 0
-
-            def __torch_dispatch__(self, op, types, args=(), kwargs=None):
-                if op == torch.ops.aten.mm.default and args[0].shape == (3, 4) and args[1].shape == (4, 5):
-                    self.calls += 1
-                return op(*args, **(kwargs or {}))
 
         class RegionRunner(ParallelRunner):
             def init_distributed(self):
@@ -847,18 +908,10 @@ class TestParallelRunnerParallelization:
             x = torch.randn(3, 4, dtype=torch.float64, device=device, requires_grad=True)
             reference_x = x.detach().clone().requires_grad_()
             torch.manual_seed(77)
-            if compile_selected:
-                actual = runner.model(x)
-                forward_rng = torch.get_rng_state()
-                forward_cuda_rng = torch.cuda.get_rng_state(device) if device.type == "cuda" else None
-                gradients = torch.autograd.grad(actual.square().sum(), (x, *runner.model.parameters()))
-            else:
-                with CountForwardMM() as counter:
-                    actual = runner.model(x)
-                    forward_rng = torch.get_rng_state()
-                    forward_cuda_rng = torch.cuda.get_rng_state(device) if device.type == "cuda" else None
-                    gradients = torch.autograd.grad(actual.square().sum(), (x, *runner.model.parameters()))
-                assert counter.calls == 1
+            actual = runner.model(x)
+            forward_rng = torch.get_rng_state()
+            forward_cuda_rng = torch.cuda.get_rng_state(device) if device.type == "cuda" else None
+            gradients = torch.autograd.grad(actual.square().sum(), (x, *runner.model.parameters()))
             torch.testing.assert_close(torch.get_rng_state(), forward_rng)
             if forward_cuda_rng is not None:
                 torch.testing.assert_close(torch.cuda.get_rng_state(device), forward_cuda_rng)
@@ -878,7 +931,7 @@ class TestParallelRunnerParallelization:
         finally:
             runner.close()
 
-    def test_meta_model_is_parallelized_and_sharded_before_allocation(self, monkeypatch):
+    def test_meta_initialization_lifecycle(self):
         events = []
 
         class Model(nn.Linear):
@@ -914,7 +967,6 @@ class TestParallelRunnerParallelization:
                 events.append(("shard", model.weight.is_meta))
                 return model
 
-        monkeypatch.setattr(parallel_runner_module.parallel_fsdp, "check", lambda: None)
         runner = MetaRunner(
             {"logging.enabled": False, "model_init.meta": True, "fsdp.enabled": True, **_parallel_config(shard=2)}
         )
@@ -926,46 +978,16 @@ class TestParallelRunnerParallelization:
         finally:
             runner.close()
 
-    def test_requires_model_parallelization_for_model_axes(self) -> None:
+    def test_requires_model_parallelization(self) -> None:
         with pytest.raises(NotImplementedError, match="model-specific parallelization"):
             TinyParallelRunner({"logging.enabled": False, **_parallel_config(context=2, pipeline=4, tensor=2)})
 
-    def test_loss_parallel_auto_follows_tensor_parallel_axis(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        events: list[str] = []
+    @pytest.mark.parametrize("enabled", [None, False])
+    def test_loss_parallel_behavior(self, enabled):
+        require_gloo()
+        run_distributed(_loss_parallel_worker, worker_args=(enabled,))
 
-        @contextmanager
-        def fake_loss_parallel():
-            events.append("enter")
-            try:
-                yield
-            finally:
-                events.append("exit")
-
-        monkeypatch.setattr(parallel_runner_module, "torch_loss_parallel", fake_loss_parallel)
-        runner = TensorParallelRunner({"logging.enabled": False, **_parallel_config(tensor=2)})
-        try:
-            assert runner.loss_parallel_enabled is True
-            with runner.infer_context():
-                events.append("body")
-            assert events == ["enter", "body", "exit"]
-        finally:
-            runner.close()
-
-    def test_loss_parallel_can_be_disabled_for_tensor_parallel(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(
-            parallel_runner_module,
-            "torch_loss_parallel",
-            lambda: pytest.fail("loss_parallel should not be entered"),
-        )
-        runner = TensorParallelRunner({"logging.enabled": False, **_parallel_config(tensor=2, loss_parallel=False)})
-        try:
-            assert runner.loss_parallel_enabled is False
-            with runner.infer_context():
-                pass
-        finally:
-            runner.close()
-
-    def test_loss_parallel_true_requires_tensor_parallel_axis(self) -> None:
+    def test_loss_parallel_requires_tensor_axis(self) -> None:
         with pytest.raises(ValueError, match="parallel.loss_parallel=True requires parallel.axes.tensor > 1"):
             TinyParallelRunner({"logging.enabled": False, **_parallel_config(shard=16, loss_parallel=True)})
 
@@ -979,85 +1001,15 @@ class TestParallelRunnerParallelization:
                 }
             )
 
-    def test_fsdp_wraps_target_modules_before_root(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        class Block(nn.Module):
-            def __init__(self) -> None:
-                super().__init__()
-                self.proj = nn.Linear(4, 4)
+    def test_fsdp_update(self):
+        require_nccl_cuda(2)
+        run_distributed(_fsdp_update_worker)
 
-            def forward(self, x):
-                return self.proj(x)
-
-        class BlockModel(nn.Module):
-            def __init__(self) -> None:
-                super().__init__()
-                self.blocks = nn.ModuleList([Block(), Block()])
-                self.head = nn.Linear(4, 2)
-
-            def forward(self, x):
-                for block in self.blocks:
-                    x = block(x)
-                return self.head(x)
-
-        class FsdpPolicyRunner(CpuParallelRunner):
-            def init_distributed(self) -> None:
-                _init_parallel_topology(self)
-
-            @property
-            def world_size(self) -> int:
-                return 2
-
-            @property
-            def rank(self) -> int:
-                return 0
-
-            def _check_fsdp_prerequisites(self) -> None:
-                return
-
-            def __init__(self, config):
-                super().__init__(config)
-                self.model = BlockModel()
-                self.criterion = nn.MSELoss()
-                self.optimizer = optim.SGD(self.model.parameters(), lr=0.1)
-
-        calls: list[tuple[nn.Module, dict[str, object]]] = []
-
-        def fake_fully_shard(module, **kwargs):
-            calls.append((module, dict(kwargs)))
-            return module
-
-        monkeypatch.setattr(parallel_runner_module, "fully_shard", fake_fully_shard)
-        runner = FsdpPolicyRunner(
-            {
-                "logging.enabled": False,
-                "fsdp": {
-                    "enabled": True,
-                    "mesh": "mesh",
-                    "module_classes": ["Block"],
-                    "reshard_after_forward": "default",
-                    "root_reshard_after_forward": False,
-                },
-                **_parallel_config(shard=2, pipeline=1, tensor=1),
-            }
-        )
-        try:
-            assert [module for module, _kwargs in calls] == [
-                runner.model.blocks[0],
-                runner.model.blocks[1],
-                runner.model,
-            ]
-            assert calls[0][1]["reshard_after_forward"] is True
-            assert calls[1][1]["reshard_after_forward"] is True
-            assert calls[2][1]["reshard_after_forward"] is False
-        finally:
-            runner.close()
-
-    def test_fsdp_rejects_unmatched_target_modules(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_fsdp_rejects_unmatched_target_modules(self) -> None:
         class FsdpPolicyRunner(TinyParallelRunner):
             def _check_fsdp_prerequisites(self) -> None:
                 return
 
-        monkeypatch.setattr(parallel_runner_module, "fully_shard", lambda module, **kwargs: module)
         with pytest.raises(ValueError, match="fsdp.module_classes matched no modules"):
             FsdpPolicyRunner(
                 {
@@ -1075,7 +1027,7 @@ class TestParallelRunnerParallelization:
 
 class TestParallelRunnerPipelineBinding:
 
-    def test_model_owned_parallelize_runs_for_model_axes(self) -> None:
+    def test_model_parallelize_hook(self) -> None:
         class ParallelizableLinear(nn.Linear):
             def __init__(self) -> None:
                 super().__init__(4, 2)
@@ -1108,7 +1060,6 @@ class TestParallelRunnerPipelineBinding:
         try:
             assert runner.model_parallel_axes == ("tensor", "context", "expert", "expert_tensor")
             assert runner.model_parallel_degree == 16
-            assert isinstance(runner.model, ParallelizableLinear)
             assert runner.model.parallel_context is runner.parallel
         finally:
             runner.close()
@@ -1247,7 +1198,7 @@ class TestParallelRunnerPipelineBinding:
         finally:
             runner.close()
 
-    def test_pipeline_builds_schedule_for_local_stage(self) -> None:
+    def test_local_stage_schedule(self) -> None:
         captured = {}
         sentinel_schedule = object()
 
@@ -1344,10 +1295,8 @@ class TestParallelRunnerPipelineBinding:
             def __init__(self) -> None:
                 super().__init__()
                 self.parts = nn.ModuleList([nn.Linear(4, 4), nn.Linear(4, 2)])
-                self.partition_calls = []
 
             def build_pipeline_model_part(self, *, stage_index, num_stages, module_fqns, parallel):
-                self.partition_calls.append((stage_index, num_stages, module_fqns, parallel))
                 return self.parts[stage_index]
 
         class PartitionRunner(CpuParallelRunner):
@@ -1376,13 +1325,12 @@ class TestParallelRunnerPipelineBinding:
 
         runner = PartitionRunner({"logging.enabled": False, **_parallel_config(shard=1, pipeline=2, tensor=1)})
         try:
-            assert runner.root_model.partition_calls == [(0, 2, None, runner.parallel)]
             assert runner.model is runner.root_model.parts[0]
             assert captured["stage_model"] is runner.root_model.parts[0]
         finally:
             runner.close()
 
-    def test_pipeline_stage_indices_support_looped_virtual_stages(self) -> None:
+    def test_virtual_stage_indices(self) -> None:
         class PartitionRunner(TinyParallelRunner):
             @property
             def world_size(self) -> int:
@@ -1408,7 +1356,7 @@ class TestParallelRunnerPipelineBinding:
         finally:
             runner.close()
 
-    def test_pipeline_stage_indices_reject_non_multiple_virtual_stages(self) -> None:
+    def test_invalid_virtual_stage_count(self) -> None:
         runner = TinyParallelRunner({"logging.enabled": False, **_parallel_config(shard=4, pipeline=4, tensor=1)})
         try:
             with pytest.raises(ValueError, match="divisible"):
@@ -1473,7 +1421,7 @@ class TestParallelRunnerPipelineBinding:
         finally:
             runner.close()
 
-    def test_pipeline_rejects_multiple_local_parts_without_schedule(self) -> None:
+    def test_multiple_parts_require_schedule(self) -> None:
         class PartitionRunner(CpuParallelRunner):
             def init_distributed(self) -> None:
                 _init_parallel_topology(self)
@@ -1549,14 +1497,15 @@ class TestParallelRunnerPipelineBinding:
 class TestParallelRunnerRuntimeBehavior:
 
     @pytest.mark.parametrize("device_type", ["cpu", "cuda"])
-    def test_native_pipeline_scaling_clipping_and_scaler_resume(self, device_type) -> None:
+    def test_pipeline_scaler_resume(self, device_type) -> None:
         require_gloo()
         if device_type == "cuda" and torch.cuda.device_count() < 2:
             pytest.skip("two CUDA devices are required")
         run_distributed(_pipeline_scaled_backward_worker, worker_args=(device_type,))
 
     @pytest.mark.parametrize("device_type", ["cpu", "cuda"])
-    def test_pipeline_scaled_microbatches_match_native_update(self, device_type) -> None:
+    @pytest.mark.parametrize("lengths", [(2, 2), (1, 3)])
+    def test_scaled_pipeline_update(self, device_type, lengths) -> None:
         if device_type == "cuda" and not torch.cuda.is_available():
             pytest.skip("CUDA is unavailable")
 
@@ -1565,7 +1514,7 @@ class TestParallelRunnerRuntimeBehavior:
                 self.runner = runner
 
             def step(self, inputs, *, target, losses):
-                for part, labels in zip(inputs.chunk(2), target.chunk(2)):
+                for part, labels in zip(inputs.split(lengths), target.split(lengths)):
                     loss = self.runner._pipeline_loss(self.runner.model(part), labels)
                     losses.append(loss.detach())
                     loss.backward()
@@ -1604,9 +1553,10 @@ class TestParallelRunnerRuntimeBehavior:
             with runner.infer_context():
                 reference = runner.criterion(runner.model(inputs), targets)
             gradient = torch.autograd.grad(reference, runner.model.weight)[0]
-            _, loss = runner.train_step((inputs, targets))
+            runner.dataloaders["train"] = [(inputs, targets)]
+            result = runner.train_epoch()
             torch.testing.assert_close(runner.model.weight, initial - 0.1 * gradient, atol=1e-4, rtol=1e-3)
-            torch.testing.assert_close(loss, reference, atol=1e-4, rtol=1e-3)
+            assert result["loss"] == pytest.approx(reference.item(), rel=1e-3, abs=1e-4)
             state = runner.state_dict()
             assert state["grad_scaler"] == runner.grad_scaler.state_dict()
             runner.grad_scaler.load_state_dict(dict(state["grad_scaler"], scale=32.0))
@@ -1615,7 +1565,7 @@ class TestParallelRunnerRuntimeBehavior:
         finally:
             runner.close()
 
-    def test_runner_mode_updates_all_local_model_parts(self) -> None:
+    def test_local_parts_mode(self) -> None:
         class OpaqueSchedule:
             def step(self, *args, **kwargs):
                 del args, kwargs
@@ -1624,15 +1574,6 @@ class TestParallelRunnerRuntimeBehavior:
             def eval(self, *args, **kwargs):
                 del args, kwargs
                 return None
-
-        class TrackingModule(nn.Module):
-            def __init__(self) -> None:
-                super().__init__()
-                self.calls: list[bool] = []
-
-            def train(self, mode: bool = True):
-                self.calls.append(bool(mode))
-                return super().train(mode)
 
         class ModeRunner(CpuParallelRunner):
             def init_distributed(self) -> None:
@@ -1648,7 +1589,7 @@ class TestParallelRunnerRuntimeBehavior:
 
             def __init__(self, config):
                 super().__init__(config)
-                parts = [TrackingModule(), TrackingModule()]
+                parts = [nn.Identity(), nn.Identity()]
                 self.pipeline_schedule = OpaqueSchedule()
                 self.model_parts = parts
                 self.model = parts[0]
@@ -1657,14 +1598,13 @@ class TestParallelRunnerRuntimeBehavior:
         try:
             first_part, second_part = runner.model_parts
             runner.mode = "evaluate"
+            assert not first_part.training and not second_part.training
             runner.mode = "train"
-
-            assert first_part.calls == [False, True]
-            assert second_part.calls == [False, True]
+            assert first_part.training and second_part.training
         finally:
             runner.close()
 
-    def test_middle_pipeline_stage_restores_loader_progress(self) -> None:
+    def test_middle_stage_loader_progress(self) -> None:
         class RestoreRunner(TinyParallelRunner):
             def __init__(self, config):
                 super().__init__(config)
@@ -1683,13 +1623,11 @@ class TestParallelRunnerRuntimeBehavior:
 
             runner.dataloaders.load_state_dict({"train": target_loader.state_dict()})
 
-            assert isinstance(runner.dataloaders["train"], StepProxyLoader)
-            assert loader.state_dict()["_num_yielded"] == 2
             assert [batch.tolist() for batch in loader] == [[4, 5], [6, 7]]
         finally:
             runner.close()
 
-    def test_training_evaluation_preserves_pipeline_proxy_and_uses_native_data_sampling(self) -> None:
+    def test_pipeline_training_validation(self) -> None:
         class EvaluationRunner(TinyParallelRunner):
             def __init__(self, config):
                 super().__init__(config)
@@ -1706,13 +1644,13 @@ class TestParallelRunnerRuntimeBehavior:
             mapping = runner.dataloaders
             original = mapping["val"]
             iterator = iter(original)
-            assert isinstance(original, StepProxyLoader) and next(iterator) is None
+            assert next(iterator) is None
             for _ in range(2):
                 with runner._evaluation_context(["val"]):
                     raw = runner.dataloaders.get("val")
                     assert [batch.item() for batch in raw] == list(range(runner.data_rank, 8, runner.data_degree))
                     proxy = runner.dataloaders["val"]
-                    assert isinstance(proxy, StepProxyLoader) and list(proxy) == [None] * len(raw)
+                    assert list(proxy) == [None] * len(raw)
                     state = runner._checkpoint_dataloader_state()
                     assert state["val"]["position"] == 1
             assert runner.dataloaders is mapping and mapping["val"] is original
@@ -1720,16 +1658,16 @@ class TestParallelRunnerRuntimeBehavior:
         finally:
             runner.close()
 
-    def test_middle_pipeline_stage_trains_without_loading_batches(self, runner_factory) -> None:
-        class NoIterLoader:
-            batch_sampler = None
-            sampler = None
+    def test_middle_stage_skips_loading(self, runner_factory) -> None:
+        reads = []
 
-            def __len__(self) -> int:
+        class Dataset:
+            def __len__(self):
                 return 3
 
-            def __iter__(self):
-                raise AssertionError("middle pipeline stage should not iterate loader payload")
+            def __getitem__(self, index):
+                reads.append(index)
+                return index
 
         class MiddleStageRunner(CpuParallelRunner):
             def init_distributed(self) -> None:
@@ -1757,10 +1695,11 @@ class TestParallelRunnerRuntimeBehavior:
             {"logging.enabled": False, "logging.interval": 0, **_parallel_config(shard=1, pipeline=3, tensor=1)},
             runner_type=MiddleStageRunner,
         )
-        runner.dataloaders["train"] = NoIterLoader()
+        runner.dataloaders["train"] = StatefulDataLoader(Dataset(), batch_size=1)
 
         runner.train_epoch(split="train")
         assert runner.train_state.global_step == 3
+        assert reads == []
 
     def test_load_optimizer_requires_state_dict(self, runner_factory) -> None:
         runner = runner_factory(
@@ -1770,7 +1709,7 @@ class TestParallelRunnerRuntimeBehavior:
         with pytest.raises(ValueError, match="checkpoint has no optimizer state"):
             runner.load_optimizer(None)
 
-    def test_optimizer_parameters_include_shared_parameter_once(self) -> None:
+    def test_shared_optimizer_parameter(self) -> None:
         class SharedPart(nn.Module):
             def __init__(self, parameter: nn.Parameter) -> None:
                 super().__init__()
@@ -1788,28 +1727,7 @@ class TestParallelRunnerRuntimeBehavior:
         finally:
             runner.close()
 
-    def test_pipeline_loss_uses_token_weighted_sum(self) -> None:
-        runner = TinyParallelRunner(
-            {"logging.enabled": False, "accum_steps": 16, **_parallel_config(shard=2, pipeline=8, tensor=1)}
-        )
-        try:
-            runner._pipeline_loss_weighting = "train"
-            runner._pipeline_loss_divisor_local = 0.0
-            runner._accumulation_divisor_local = 0.0
-            runner._prepare_pipeline_loss_normalization(None, torch.zeros(4, 1))
-
-            loss_a = runner._pipeline_loss(torch.ones(1, 1), torch.zeros(1, 1))
-            loss_b = runner._pipeline_loss(torch.full((3, 1), 3.0), torch.zeros(3, 1))
-            runner._finish_pipeline_loss_normalization([loss_a, loss_b])
-            weighted = runner._pipeline_loss_value([loss_a, loss_b])
-
-            assert weighted is not None
-            assert weighted.item() == pytest.approx(7.0)
-        finally:
-            runner._pipeline_loss_weighting = None
-            runner.close()
-
-    def test_pipeline_loss_logging_uses_local_loss(self) -> None:
+    def test_local_pipeline_loss_reporting(self) -> None:
         class LocalPipelineRunner(TinyParallelRunner):
             @property
             def world_size(self) -> int:

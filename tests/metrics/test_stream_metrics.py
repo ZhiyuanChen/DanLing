@@ -227,16 +227,13 @@ class TestMetricMeter:
         with pytest.raises(ValueError, match="Expected metric to be callable"):
             MetricMeter(1)  # type: ignore[arg-type]
 
-    def test_uses_preprocessed_inputs(self):
-        preprocess_called = {"count": 0}
-
-        def preprocess(input: torch.Tensor, target: torch.Tensor):
-            preprocess_called["count"] += 1
+    def test_preprocessed_values(self):
+        def preprocess(input, target):
             return input + 1, target
 
         meter = MetricMeter(lambda input, target: (input == target).float().mean(), preprocess=preprocess)
-        meter.update(torch.tensor([0.0, 1.0]), torch.tensor([1.0, 1.0]))
-        assert preprocess_called["count"] == 1
+        meter.update(torch.zeros(2), torch.ones(2))
+        assert meter.val == pytest.approx(1.0)
         assert meter.count == 2
 
     def test_scalar_inputs_count_as_one(self):
@@ -249,19 +246,13 @@ class TestMetricMeter:
         meter_metricfunc = MetricMeter(binary_accuracy())
         assert repr(meter_metricfunc) == "MetricMeter(acc)"
 
-    def test_repr_for_function(self):
-        def plain_metric(input: torch.Tensor, target: torch.Tensor):
+    @pytest.mark.parametrize("bound", [False, True], ids=["function", "partial"])
+    def test_callable_repr(self, bound):
+        def plain_metric(input, target):
             return (input == target).float().mean()
 
-        meter_function = MetricMeter(plain_metric)
-        assert repr(meter_function) == "MetricMeter(plain_metric)"
-
-    def test_repr_for_partial(self):
-        def plain_metric(input: torch.Tensor, target: torch.Tensor):
-            return (input == target).float().mean()
-
-        meter_partial = MetricMeter(partial(plain_metric))
-        assert repr(meter_partial) == "MetricMeter(plain_metric)"
+        meter = MetricMeter(partial(plain_metric) if bound else plain_metric)
+        assert repr(meter) == "MetricMeter(plain_metric)"
 
 
 class TestStreamMetrics:
@@ -281,32 +272,22 @@ class TestStreamMetrics:
         assert_metric_dict_close(stream.average(), global_metrics.average())
         assert stream.count[next(iter(stream.keys()))] == global_metrics.count
 
-    def test_reset_clears_state(self):
+    def test_reset(self):
         metrics = StreamMetrics(binary_accuracy(), preprocess=preprocess_binary, distributed=False)
-
         metrics.update(torch.tensor([0.2, 0.8, 0.9]), torch.tensor([0, 1, 0]))
         assert metrics.count["acc"] == 3
-
         assert metrics.reset() is metrics
         assert metrics.count["acc"] == 0
         assert torch.isnan(torch.as_tensor(metrics.value()["acc"]))
         assert torch.isnan(torch.as_tensor(metrics.average()["acc"]))
-
-    def test_reset_allows_reuse(self):
-        metrics = StreamMetrics(binary_accuracy(), preprocess=preprocess_binary, distributed=False)
-        metrics.update(torch.tensor([0.2, 0.8, 0.9]), torch.tensor([0, 1, 0]))
-        metrics.reset()
 
         metrics.update(torch.tensor([0.2, 0.8]), torch.tensor([0, 1]))
         assert metrics.count["acc"] == 2
         assert metrics.value()["acc"] == pytest.approx(1.0)
         assert metrics.average()["acc"] == pytest.approx(1.0)
 
-    def test_updates_callable_metrics_from_batch_inputs(self):
-        calls = {"count": 0}
-
+    def test_callable_batch(self):
         def batch_metric(input: torch.Tensor, target: torch.Tensor):
-            calls["count"] += 1
             assert input.shape == torch.Size([4])
             assert target.shape == torch.Size([4])
             return (input.round() == target).float().mean()
@@ -315,7 +296,6 @@ class TestStreamMetrics:
         input = torch.tensor([0.1, 0.9, 0.2, 0.7])
         target = torch.tensor([0.0, 1.0, 1.0, 1.0])
         metrics.update(input, target)
-        assert calls["count"] == 1
         assert_close(
             torch.as_tensor(metrics.val["sample"]),
             torch.tensor(0.75),
@@ -340,10 +320,10 @@ class TestStreamMetrics:
         metrics = StreamMetrics(acc=meter, preprocess=preprocess_binary, device="cpu")
         metrics.update(torch.tensor([0.2, 0.8]), torch.tensor([0, 1]))
 
-        assert metrics["acc"] is meter
+        assert meter.avg == pytest.approx(1.0)
         assert metrics.avg["acc"] == pytest.approx(1.0)
 
-    def test_default_preprocess_accepts_column_vector_binary(self):
+    def test_binary_column(self):
         metrics = StreamMetrics(acc=binary_accuracy())
         input = torch.tensor([[0.2], [0.8]], requires_grad=True)
         target = torch.tensor([0, 1])
@@ -352,19 +332,14 @@ class TestStreamMetrics:
         assert_close(torch.as_tensor(metrics.val["acc"]), torch.tensor(1.0), rtol=RTOL, atol=ATOL, check_dtype=False)
         assert metrics.count["acc"] == 2
 
-    def test_value_preserves_tensor_metric_outputs(self):
+    def test_tensor_outputs(self):
         metrics = StreamMetrics(vector=lambda input, target: torch.stack([input.float().mean(), target.float().mean()]))
         metrics.update(torch.tensor([1.0, 0.0]), torch.tensor([1.0, 1.0]))
+        expected = torch.tensor([0.5, 1.0], dtype=torch.float64)
+        assert_close(metrics.val["vector"], expected)
+        assert_close(metrics.avg["vector"], expected)
 
-        assert_close(metrics.val["vector"], torch.tensor([0.5, 1.0], dtype=torch.float64))
-
-    def test_average_preserves_tensor_metric_outputs(self):
-        metrics = StreamMetrics(vector=lambda input, target: torch.stack([input.float().mean(), target.float().mean()]))
-        metrics.update(torch.tensor([1.0, 0.0]), torch.tensor([1.0, 1.0]))
-
-        assert_close(metrics.avg["vector"], torch.tensor([0.5, 1.0], dtype=torch.float64))
-
-    def test_empty_updates_do_not_poison_average(self):
+    def test_empty_then_valid(self):
         metrics = regression_metrics(num_outputs=2, mode="stream", distributed=False)
         metrics.update(
             torch.tensor([[1.0, 2.0]], dtype=torch.float32),
@@ -392,7 +367,7 @@ class TestStreamMetrics:
             atol=ATOL,
         )
 
-    def test_accepts_explicit_zero_n_for_empty_updates(self):
+    def test_explicit_empty_count(self):
         metrics = regression_metrics(num_outputs=2, mode="stream", distributed=False)
         metrics.update(
             torch.tensor([[1.0, 2.0]], dtype=torch.float32),
@@ -433,7 +408,7 @@ class TestStreamMetrics:
         run_distributed(_distributed_stream_metrics_nccl_worker, world_size=2)
 
 
-def test_single_sample_matrix_batch_keeps_sample_weight():
+def test_matrix_sample_weight():
     metrics = StreamMetrics(error=lambda p, t: (p - t).square().mean(), distributed=False)
     metrics.update(torch.zeros(1, 2), torch.zeros(1, 2))
     metrics.update(torch.full((2, 2), 3.0), torch.zeros(2, 2))

@@ -559,14 +559,14 @@ class TestElementwiseOps:
                 actual = output.values()
                 reference = torch.cat(parts)
                 expected = getattr(reference, method)(-1, 1, 3)
-                assert (actual.untyped_storage().data_ptr() == source.values().untyped_storage().data_ptr()) == (
-                    expected.untyped_storage().data_ptr() == reference.untyped_storage().data_ptr()
-                )
                 torch.testing.assert_close(actual, expected)
                 probe = torch.randn_like(expected)
                 torch.testing.assert_close(
                     torch.autograd.grad(actual, parts, probe), torch.autograd.grad(expected, parts, probe)
                 )
+                with torch.no_grad():
+                    output.add_(1)
+                torch.testing.assert_close(source.unbind(0 if batch_first else 1), [part + 1 for part in parts])
             parts = [torch.randn(n, 3, device=device, dtype=torch.float64, requires_grad=True) for n in (2, 5)]
             with pytest.raises(RuntimeError):
                 parts[0].view(4, 1, 3)
@@ -632,9 +632,6 @@ class TestElementwiseOps:
                 reference = torch.cat(parts)
                 expected = getattr(reference, method)(-1, *element_target[1:])
                 torch.testing.assert_close(actual, expected)
-                assert (actual.untyped_storage().data_ptr() == source.values().untyped_storage().data_ptr()) == (
-                    expected.untyped_storage().data_ptr() == reference.untyped_storage().data_ptr()
-                )
                 probe = torch.randn_like(expected)
                 torch.testing.assert_close(
                     torch.autograd.grad(actual, parts, probe), torch.autograd.grad(expected, parts, probe)
@@ -645,6 +642,9 @@ class TestElementwiseOps:
                         primal, tangent = torch.autograd.forward_ad.unpack_dual(operation(dual))
                         assert primal.shape == tangent.shape == target
                         torch.testing.assert_close(tangent.values(), torch.ones_like(expected))
+                with torch.no_grad():
+                    output.add_(1)
+                torch.testing.assert_close(source.unbind(0 if batch_first else 1), [part + 1 for part in parts])
             finally:
                 torch.compiler.reset()
 
@@ -696,7 +696,7 @@ class TestElementwiseOps:
         torch.testing.assert_close(actual_gradients, reference_gradients)
 
     @pytest.mark.parametrize("width", [1, 4], ids=["identity", "static-expansion"])
-    def test_native_expand_preserves_logical_ragged_axes(self, device, width):
+    def test_expand_ragged_axes(self, device, width):
         leaves = [torch.randn(1, length, device=device, dtype=torch.float64, requires_grad=True) for length in (2, 3)]
         source = NT(leaves, ragged_dims=(1,))
 
@@ -724,7 +724,7 @@ class TestElementwiseOps:
     @pytest.mark.parametrize(
         "shape,batch_first", [((), True), ((), False), ((3,), False), ((2, 3), True), ((2, 3), False)]
     )
-    def test_native_stack_mixes_dense_and_nested_rectangular_batches(self, device, shape, batch_first):
+    def test_mixed_rectangular_stack(self, device, shape, batch_first):
         leaves = [torch.randn(shape, dtype=torch.float64, device=device, requires_grad=True) for _ in range(2)]
         source = NT(leaves, ragged_dims=(), batch_first=batch_first)
         elements = leaves
@@ -778,7 +778,7 @@ class TestElementwiseOps:
         assert_close(and_out, and_ref)
 
     @pytest.mark.parametrize("shape,packed", [((2, 3), False), ((3,), True)])
-    def test_rectangular_dense_operands_use_logical_then_packed_axes(self, device, shape, packed):
+    def test_rectangular_operand_axes(self, device, shape, packed):
         leaves = [torch.randn(shape, dtype=torch.float64, device=device, requires_grad=True) for _ in range(2)]
         source = NT(leaves, ragged_dims=(), batch_first=False)
         reference = torch.stack(leaves, dim=1)
@@ -814,7 +814,7 @@ class TestElementwiseOps:
         reference = NT([tensor / operand[index] for index, tensor in enumerate(nt)], **reference_options(nt))
         assert_close(result, reference)
 
-    def test_binary_op_batchwise_dense_operand_with_static_head_dim(self):
+    def test_batchwise_static_head(self):
         nt = NT(
             [
                 torch.arange(2 * 2 * 3, dtype=torch.float32).reshape(2, 2, 3),
@@ -827,7 +827,7 @@ class TestElementwiseOps:
         reference = NT([tensor * operand[index] for index, tensor in enumerate(nt)], **reference_options(nt))
         assert_close(result, reference)
 
-    def test_dense_operand_can_target_static_tail_or_batch(self):
+    def test_dense_operand_axes(self):
         nt = NT(
             [
                 torch.arange(2 * 2 * 3, dtype=torch.float32).reshape(2, 2, 3),
@@ -846,7 +846,7 @@ class TestElementwiseOps:
             assert_close(batch_aligned[index], element * operand[index])
 
     @pytest.mark.parametrize("reverse", [False, True])
-    def test_binary_op_dense_padded_shape_trailing_broadcast(self, reverse):
+    def test_padded_trailing_broadcast(self, reverse):
         # A mask-like NT with a singleton channel dim against a dense operand carrying the
         # full channel dim: padded shapes are broadcast-compatible ([B, S, 1] vs [B, S, H])
         # and must align on the ragged sequence dim while broadcasting the trailing dim.
@@ -1799,7 +1799,7 @@ class TestIndexingOps:
             assert_close(result, expected)
 
     @pytest.mark.parametrize("operation", [torch.index_add, torch.index_copy])
-    def test_index_write_maps_multi_ragged_static_axis(self, operation):
+    def test_static_axis_writes(self, operation):
         parts = [torch.arange(r * s * 9.0).reshape(r, s, 3, 3) for r, s in ((2, 3), (3, 4))]
         indices = torch.tensor([1, 0, 2])
         source = NT([part + 1000 for part in parts])
@@ -1807,146 +1807,55 @@ class TestIndexingOps:
         for actual, part, replacement in zip(output, parts, source):
             assert_close(actual, operation(part, 2, indices, replacement))
 
-    def test_index_put_preserves_nonleading_ragged_coordinates(self):
+    def test_nonleading_index_put(self):
         parts = [torch.arange(12.0).reshape(2, 2, 3) + 100 * i for i in range(2)]
         indices, values = (torch.tensor([0]),), torch.full((1, 2, 3), -1.0)
         output = torch.index_put(NT(parts, ragged_dims=(1,)), indices, values)
         for actual, part in zip(output, parts):
             assert_close(actual, torch.index_put(part, indices, values))
 
-    def test_index_select_retains_all_outer_ragged_levels(self):
+    def test_index_select_ragged_levels(self):
         parts = [torch.arange(r * s * t).reshape(r, s, t) for r, s, t in ((2, 3, 4), (3, 4, 5))]
         indices = torch.tensor([0, 1])
         output = torch.index_select(NT(parts, ragged_dims=(0, 1, 2)), 3, indices)
         for actual, part in zip(output, parts):
             assert_close(actual, part.index_select(2, indices))
 
-    def test_index_put_matches_dense(self, device):
-        seed = 0
-        dtype = torch.float32
-        shapes = ragged_shapes(seed, batch_size=3, min_len=3, max_len=6, trailing_shape=(4,))
-        base = nested_rand(shapes, device, dtype)
-        min_rows = min(shape[0] for shape in shapes)
-        generator = torch.Generator()
-        generator.manual_seed(seed)
+    @pytest.mark.parametrize("case", ["per_sample", "shared", "scalar", "duplicates", "points"])
+    def test_index_put_values(self, device, case):
+        parts = [torch.arange(n * 3.0, device=device).reshape(n, 3) for n in (4, 5)]
+        source = NT(parts)
+        indices = (torch.tensor([0, -1], device=device),)
+        values = torch.arange(6.0, device=device).reshape(2, 3)
+        if case == "per_sample":
+            values = NT([values, values + 6])
+        elif case == "scalar":
+            values = torch.tensor(-3.0, device=device)
+        elif case == "duplicates":
+            indices = (torch.tensor([0, -1, -1], device=device),)
+            values = torch.arange(9.0, device=device).reshape(3, 3)
+        elif case == "points":
+            indices = (torch.tensor([[0, -1], [1, 2]], device=device), torch.tensor([[1, 0], [2, 1]], device=device))
+            values = NT([torch.arange(4.0, device=device).reshape(2, 2) + 10 * i for i in range(2)])
+        accumulate = case == "duplicates"
+        result = torch.ops.aten.index_put.default(source, list(indices), values, accumulate)
+        updates = values.unbind() if isinstance(values, NT) else [values] * len(parts)
+        expected = [
+            torch.index_put(part, indices, update, accumulate=accumulate) for part, update in zip(parts, updates)
+        ]
+        torch.testing.assert_close(result.unbind(), expected)
+        torch.testing.assert_close(source.unbind(), parts)
 
-        row_count = 2
-        rows = torch.randint(0, min_rows, (row_count,), generator=generator)
-        if row_count > 1:
-            rows[-1] = rows[-1] - min_rows
-        rows = rows.to(device=device, dtype=torch.long)
-
-        shared_values = torch.randn(row_count, 4, device=device, dtype=dtype)
-        row_out = torch.ops.aten.index_put.default(base, [rows], shared_values, False)
-        row_ref = NT([torch.index_put(t, (rows,), shared_values) for t in base], **reference_options(base))
-        assert_close(row_out, row_ref)
-
-        dup_rows = rows.clone()
-        dup_rows[0] = dup_rows[-1]
-        dup_values = torch.randn(row_count, 4, device=device, dtype=dtype)
-        dup_out = torch.ops.aten.index_put.default(base, [dup_rows], dup_values, True)
-        dup_ref = NT(
-            [torch.index_put(t, (dup_rows,), dup_values, accumulate=True) for t in base], **reference_options(base)
-        )
-        assert_close(dup_out, dup_ref)
-
-        point_rows = torch.randint(0, min_rows, (2, 2), generator=generator)
-        point_rows[0, 0] = point_rows[0, 0] - min_rows
-        point_rows = point_rows.to(device=device, dtype=torch.long)
-        point_cols = torch.randint(0, 4, (2, 2), generator=generator).to(device=device, dtype=torch.long)
-        point_values = NT(
-            [torch.randn(2, 2, device=device, dtype=dtype) for _ in range(len(base))],
-            **reference_options(base),
-        )
-        point_out = torch.ops.aten.index_put.default(base, [point_rows, point_cols], point_values, False)
-        point_ref = NT(
-            [torch.index_put(t, (point_rows, point_cols), v) for t, v in zip(base, point_values)],
-            **reference_options(base),
-        )
-        assert_close(point_out, point_ref)
-
-    def test_index_write(self):
-        nt = NT(
-            [
-                torch.zeros(2, 4),
-                torch.zeros(3, 4),
-            ]
-        )
-        index = torch.tensor([0, 2], dtype=torch.long)
-        src = NT(
-            [
-                torch.tensor([[1.0, 2.0], [3.0, 4.0]]),
-                torch.tensor([[5.0, 6.0], [7.0, 8.0], [9.0, 10.0]]),
-            ]
-        )
-
-        index_add_out = torch.ops.aten.index_add.default(nt, 2, index, src)
-        index_add_ref = NT([torch.index_add(t, 1, index, s) for t, s in zip(nt, src)], **reference_options(nt))
-        assert_close(index_add_out, index_add_ref)
-
-        index_copy_out = torch.ops.aten.index_copy.default(nt, 2, index, src)
-        index_copy_ref = NT([torch.index_copy(t, 1, index, s) for t, s in zip(nt, src)], **reference_options(nt))
-        assert_close(index_copy_out, index_copy_ref)
-
-        row_nt = NT(
-            [
-                torch.zeros(4, 3),
-                torch.zeros(5, 3),
-            ]
-        )
-        row_index = torch.tensor([0, 2], dtype=torch.long)
-        row_values = NT(
-            [
-                torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]),
-                torch.tensor([[7.0, 8.0, 9.0], [10.0, 11.0, 12.0]]),
-            ]
-        )
-
-        index_put_out = torch.ops.aten.index_put.default(row_nt, [row_index], row_values, False)
-        index_put_ref = NT(
-            [torch.index_put(t, (row_index,), v) for t, v in zip(row_nt, row_values)], **reference_options(row_nt)
-        )
-        assert_close(index_put_out, index_put_ref)
-
-        shared_values = torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
-        shared_out = torch.ops.aten.index_put.default(row_nt, [row_index], shared_values, False)
-        shared_ref = NT([torch.index_put(t, (row_index,), shared_values) for t in row_nt], **reference_options(row_nt))
-        assert_close(shared_out, shared_ref)
-
-        scalar_value = torch.tensor(-3.0)
-        scalar_out = torch.ops.aten.index_put.default(row_nt, [row_index], scalar_value, False)
-        scalar_ref = NT([torch.index_put(t, (row_index,), scalar_value) for t in row_nt], **reference_options(row_nt))
-        assert_close(scalar_out, scalar_ref)
-
-        duplicate_index = torch.tensor([0, 0, 2], dtype=torch.long)
-        duplicate_values = torch.tensor(
-            [
-                [1.0, 2.0, 3.0],
-                [10.0, 20.0, 30.0],
-                [4.0, 5.0, 6.0],
-            ]
-        )
-        duplicate_out = torch.ops.aten.index_put.default(row_nt, [duplicate_index], duplicate_values, True)
-        duplicate_ref = NT(
-            [torch.index_put(t, (duplicate_index,), duplicate_values, accumulate=True) for t in row_nt],
-            **reference_options(row_nt),
-        )
-        assert_close(duplicate_out, duplicate_ref)
-
-        point_rows = torch.tensor([[0, -1], [1, 2]], dtype=torch.long)
-        point_cols = torch.tensor([[1, 0], [2, 1]], dtype=torch.long)
-        point_values = NT(
-            [
-                torch.tensor([[13.0, 17.0], [19.0, 23.0]]),
-                torch.tensor([[29.0, 31.0], [37.0, 41.0]]),
-            ]
-        )
-        point_out = torch.ops.aten.index_put.default(row_nt, [point_rows, point_cols], point_values, False)
-        point_ref = NT(
-            [torch.index_put(t, (point_rows, point_cols), v) for t, v in zip(row_nt, point_values)],
-            **reference_options(row_nt),
-        )
-        assert_close(point_out, point_ref)
+    @pytest.mark.parametrize("operation", ["index_add", "index_copy"])
+    def test_index_writes(self, device, operation):
+        parts = [torch.zeros(n, 4, device=device) for n in (2, 3)]
+        updates = [torch.arange(2 * n, device=device, dtype=torch.float32).reshape(n, 2) for n in (2, 3)]
+        indices = torch.tensor([0, 2], device=device)
+        source = NT(parts)
+        result = getattr(torch.ops.aten, operation).default(source, 2, indices, NT(updates))
+        expected = [getattr(torch, operation)(part, 1, indices, update) for part, update in zip(parts, updates)]
+        torch.testing.assert_close(result.unbind(), expected)
+        torch.testing.assert_close(source.unbind(), parts)
 
     def test_indexing(self):
         nt = NT(
@@ -2064,7 +1973,7 @@ class TestIndexingOps:
         assert_close(nt_nt, ref_nt_nt)
         assert_close(tensor_nt, ref_tensor_nt)
 
-    def test_searchsorted_rejects_nested_sorter_without_sorted_sequence(self):
+    def test_searchsorted_sorter_errors(self):
         boundaries = torch.tensor([1.0, 3.0, 5.0])
         values = torch.tensor([2.0, 4.0])
         sorter = NT([torch.tensor([0, 1, 2], dtype=torch.long)])
@@ -2170,7 +2079,7 @@ class TestLinearAlgebraOps:
             torch.autograd.grad(sum(grad.real.sum() for grad in references), inputs),
         )
 
-    def test_matrix_kernels_follow_permuted_logical_axes(self):
+    def test_permuted_matrix_axes(self):
         parts = [torch.randn(rows, 3, 3, dtype=torch.float64) for rows in (2, 4)]
         source = torch.permute(NT(parts, ragged_dims=(0,)), (0, 1, 3, 2))
         weight = torch.randn(3, 3, dtype=torch.float64)
@@ -2185,7 +2094,7 @@ class TestLinearAlgebraOps:
             assert_close(q[i] @ r[i], expected)
             assert_close(u[i] @ torch.diag_embed(singular[i]) @ vh[i], expected)
 
-    def test_matrix_vector_keeps_interior_ragged_axes(self):
+    def test_interior_matrix_vector(self):
         parts = [torch.randn(2, length, 3) for length in (2, 4)]
         vector = torch.randn(3)
         output = torch.matmul(NT(parts, ragged_dims=(1,)), vector)
@@ -2265,7 +2174,7 @@ class TestLinearAlgebraOps:
         for out_elem, ref_elem in zip(solve_out, solve_ref):
             assert_close(out_elem, ref_elem, rtol=1e-5, atol=1e-5)
 
-    def test_linalg_qr_and_eigh_batched_matrices(self):
+    def test_batched_qr_eigh(self):
         """QR and eigendecomposition on nested tensors whose elements are batches of matrices."""
         a0 = torch.randn(2, 3, 3)
         a1 = torch.randn(3, 3, 3)
@@ -2415,7 +2324,7 @@ class TestReductionOps:
         assert_close(gradient, expected_gradient)
         assert_close(second, expected_second)
 
-    def test_vector_norm_zero_coordinates_and_dtype(self):
+    def test_vector_norm_zero_dtype(self):
         values = torch.tensor([0.0, 2.0], dtype=torch.float64, requires_grad=True)
         output = torch.linalg.vector_norm(NT(values), ord=0.5, dim=1)
         gradient = torch.autograd.grad(output.sum(), values)[0]
@@ -2423,7 +2332,7 @@ class TestReductionOps:
         with pytest.raises(RuntimeError, match="dtype"):
             torch.linalg.vector_norm(NT(values), dim=1, dtype=torch.float32)
 
-    def test_order_statistics_map_static_axis_after_ragged_collapse(self):
+    def test_collapsed_order_statistics(self):
         parts = [torch.arange(24.0).reshape(2, 3, 4), torch.arange(24.0).reshape(3, 2, 4)]
         output = torch.median(NT(parts, ragged_dims=(0, 1)), dim=3)
         for actual, part in zip(output.values, parts):
@@ -2592,7 +2501,7 @@ class TestReductionOps:
 
 class TestSortingOps:
 
-    def test_ragged_topk_k_exceeds_min_length(self):
+    def test_topk_length_errors(self):
         nt = NT(
             [
                 torch.tensor([[1.0, 2.0], [3.0, 4.0]]),
@@ -2665,7 +2574,7 @@ class TestSortingOps:
         reference = NT([ref_fn(t) for t in nt], **reference_options(nt))
         assert_close(result, reference)
 
-    def test_cumsum_does_not_mix_sample_prefixes(self):
+    def test_cumsum_sample_boundaries(self):
         parts = [torch.tensor([float("inf")]), torch.tensor([1.0, 2.0]), torch.tensor([1e20, 1.0, -1e20, 3.0])]
         output = torch.cumsum(NT(parts), dim=1)
         for actual, part in zip(output, parts):

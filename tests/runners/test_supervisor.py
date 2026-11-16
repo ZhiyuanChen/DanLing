@@ -31,11 +31,10 @@ import pytest
 import torch
 
 from danling.runners.checkpoints import TorchDistributedCheckpointManager
-from danling.runners.supervisor import RunnerSupervisor
 from tests.runners.distributed import can_bind_localhost, find_free_port
 
 
-def test_runner_supervisor_gc_pacing_disables_and_restores_automatic_gc(tmp_path: Path, runner_factory) -> None:
+def test_gc_lifecycle(tmp_path: Path, runner_factory) -> None:
     originally_enabled = python_gc.isenabled()
     python_gc.enable()
 
@@ -52,28 +51,20 @@ def test_runner_supervisor_gc_pacing_disables_and_restores_automatic_gc(tmp_path
     assert python_gc.isenabled() is originally_enabled
 
 
-def test_runner_supervisor_writes_heartbeat_file_on_startup(tmp_path: Path, runner_factory) -> None:
+def test_heartbeat_lifecycle(runner_factory):
     runner = runner_factory({"heartbeat": {"enabled": True, "interval_seconds": 30.0}, "steps": 8})
-    heartbeat_path = Path(runner.workspace.dir) / "heartbeats" / f"rank-{runner.rank:05d}.json"
-    startup_payload = json.loads(heartbeat_path.read_text(encoding="utf-8"))
-    assert startup_payload["status"] == "starting"
-    assert startup_payload["event"] == "startup"
-    assert startup_payload["rank"] == runner.rank
-    assert startup_payload["steps"] == 8
-
-
-def test_runner_supervisor_writes_heartbeat_file_on_close(tmp_path: Path, runner_factory) -> None:
-    runner = runner_factory({"heartbeat": {"enabled": True, "interval_seconds": 30.0}, "steps": 8})
-    heartbeat_path = Path(runner.workspace.dir) / "heartbeats" / f"rank-{runner.rank:05d}.json"
-
+    path = Path(runner.workspace.dir) / "heartbeats" / f"rank-{runner.rank:05d}.json"
+    startup = json.loads(path.read_text(encoding="utf-8"))
+    assert startup["status"] == "starting"
+    assert startup["event"] == "startup"
+    assert startup["rank"] == runner.rank and startup["steps"] == 8
     runner.close()
+    shutdown = json.loads(path.read_text(encoding="utf-8"))
+    assert shutdown["status"] == "closed"
+    assert shutdown["event"] == "shutdown"
 
-    shutdown_payload = json.loads(heartbeat_path.read_text(encoding="utf-8"))
-    assert shutdown_payload["status"] == "closed"
-    assert shutdown_payload["event"] == "shutdown"
 
-
-def test_runner_supervisor_heartbeat_reports_progress(tmp_path: Path, runner_factory) -> None:
+def test_heartbeat_reports_progress(tmp_path: Path, runner_factory) -> None:
     runner = runner_factory({"heartbeat": {"enabled": True, "interval_seconds": 30.0}, "steps": 8})
     runner.train_state.global_step = 3
     runner.train_state.epoch = 1
@@ -94,7 +85,7 @@ def test_runner_supervisor_heartbeat_reports_progress(tmp_path: Path, runner_fac
     assert payload["seconds_since_progress"] >= 0.0
 
 
-def test_runner_supervisor_heartbeat_omits_unknown_step_budget(tmp_path: Path, runner_factory) -> None:
+def test_heartbeat_omits_unknown_step_budget(tmp_path: Path, runner_factory) -> None:
     class StreamingLoader:
         def __iter__(self):
             return iter(())
@@ -108,43 +99,16 @@ def test_runner_supervisor_heartbeat_omits_unknown_step_budget(tmp_path: Path, r
     assert payload["epochs"] == 2
 
 
-def test_runner_supervisor_sigterm_saves_and_drains_checkpoints() -> None:
-    class Config:
-        def get(self, key, default=None):
-            if key == "ckpt.wait_timeout_seconds":
-                return 7.5
-            return default
-
-    class RecordingRunner:
-        config = Config()
-
-        def __init__(self) -> None:
-            self.calls: list[tuple[str, object]] = []
-
-        def prepare_for_shutdown_checkpoint(self) -> None:
-            self.calls.append(("prepare", None))
-
-        def save_checkpoint(self, **kwargs) -> None:
-            self.calls.append(("save", kwargs))
-
-        def close(self, timeout=None) -> bool:
-            self.calls.append(("close", timeout))
-            return True
-
-    runner = RecordingRunner()
-    supervisor = RunnerSupervisor(runner)
-
-    supervisor.request_shutdown(signal.SIGTERM, None)
-
-    with pytest.raises(SystemExit) as exc_info:
-        supervisor.maybe_handle_termination_signal()
-
-    assert exc_info.value.code == 128 + signal.SIGTERM
-    assert runner.calls == [
-        ("prepare", None),
-        ("save", {"save_best": False, "force": True}),
-        ("close", 7.5),
-    ]
+def test_sigterm_checkpoint(tmp_path, runner_factory):
+    runner = runner_factory({"ckpt": {"async_mode": "async"}})
+    runner.train_state.global_step = 3
+    runner.supervisor.request_shutdown(signal.SIGTERM, None)
+    with pytest.raises(SystemExit) as error:
+        runner.supervisor.maybe_handle_termination_signal()
+    assert error.value.code == 128 + signal.SIGTERM
+    checkpoint = torch.load(Path(runner.workspace.checkpoint_dir) / "latest.pth", weights_only=False)
+    assert checkpoint["state"]["train"]["global_step"] == 3
+    assert runner.checkpoint_manager.close(timeout=1.0)
 
 
 def _require_gloo_subprocess_runtime() -> None:

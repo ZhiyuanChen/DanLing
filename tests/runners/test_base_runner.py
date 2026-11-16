@@ -63,9 +63,7 @@ class _ToggleCloseCheckpointManager:
     "metric,mode,expected",
     [("loss", None, 2), ("accuracy", None, 9), ("custom_error", "min", 2), ("loss", "max", 9)],
 )
-def test_base_runner_score_direction_preserves_defaults_and_accepts_overrides(
-    tmp_path, metric, mode, expected, runner_factory
-):
+def test_score_direction(tmp_path, metric, mode, expected, runner_factory):
     score = {"split": "val", "metric": metric}
     if mode is not None:
         score["mode"] = mode
@@ -77,19 +75,19 @@ def test_base_runner_score_direction_preserves_defaults_and_accepts_overrides(
     assert runner.is_best is (expected == 9)
 
 
-def test_base_runner_log_interval_defaults_to_1024_for_unsized_loader(runner_factory) -> None:
+def test_unsized_log_interval(runner_factory) -> None:
     runner = runner_factory({"logging.enabled": False})
     runner.dataloaders["train"] = StreamingLoader()
     assert runner.log_interval == 1024
 
 
-def test_base_runner_sorts_configured_splits(tmp_path: Path, runner_factory) -> None:
+def test_sorts_configured_splits(tmp_path: Path, runner_factory) -> None:
     runner = runner_factory({"train_splits": ["z", "a", "z", "m"], "evaluate_splits": ["test", "val", "test"]})
     assert runner.train_splits == ["a", "m", "z"]
     assert runner.evaluate_splits == ["test", "val"]
 
 
-def test_base_runner_close_timeout_keeps_resources_available(tmp_path: Path, runner_factory) -> None:
+def test_close_timeout_keeps_resources_available(tmp_path: Path, runner_factory) -> None:
     runner = runner_factory()
     manager = _ToggleCloseCheckpointManager()
 
@@ -120,12 +118,14 @@ def test_base_runner_close_timeout_keeps_resources_available(tmp_path: Path, run
         runner.close()
 
 
-def test_base_runner_write_result_flattens_nested_metrics(tmp_path: Path, runner_factory) -> None:
-    runner = runner_factory()
+def test_write_result_flattens_nested_metrics(tmp_path: Path, runner_factory) -> None:
     writes: list[tuple[str, Any, str, int]] = []
 
-    def capture(name: str, score: float, split: str, steps: int) -> None:
-        writes.append((name, score, split, steps))
+    class RecordingRunner(BaseRunner):
+        def write_score(self, name, score, split, steps):
+            writes.append((name, score, split, steps))
+
+    runner = runner_factory(runner_type=RecordingRunner)
 
     class RecordingWriter:
         def flush(self) -> None:
@@ -141,7 +141,6 @@ def test_base_runner_write_result_flattens_nested_metrics(tmp_path: Path, runner
 
     runner.writer = RecordingWriter()
     runner.train_state.global_step = 7
-    runner.write_score = capture  # type: ignore[method-assign]
     runner.write_result(
         {
             "loss": loss,
@@ -168,7 +167,7 @@ def test_base_runner_write_result_flattens_nested_metrics(tmp_path: Path, runner
 
 
 @pytest.mark.parametrize("use_bytes", [False, True])
-def test_base_runner_reads_config_from_dcp_directory(tmp_path: Path, use_bytes: bool) -> None:
+def test_reads_config_from_dcp_directory(tmp_path: Path, use_bytes: bool) -> None:
     RunnerConfig({"logging.enabled": False, "seed": 123}).yaml(tmp_path / "runner.yaml")
     checkpoint = bytes(tmp_path) if use_bytes else tmp_path
 
@@ -177,19 +176,16 @@ def test_base_runner_reads_config_from_dcp_directory(tmp_path: Path, use_bytes: 
     assert config.seed == 123
 
 
-def test_base_runner_rejects_dcp_directory_without_config(tmp_path: Path) -> None:
+def test_rejects_dcp_directory_without_config(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="missing 'runner.yaml'"):
         BaseRunner.read_config(tmp_path)
 
 
-def test_base_runner_wandb_accepts_nested_results(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runner_factory
-) -> None:
+def test_wandb_accepts_nested_results(tmp_path: Path, runner_environment, runner_factory) -> None:
     pytest.importorskip("wandb.sdk", reason="W&B support is an optional dependency")
     import wandb  # pylint: disable=import-outside-toplevel
 
-    monkeypatch.setenv("WANDB_SILENT", "true")
-    monkeypatch.setenv("WANDB_CONSOLE", "off")
+    runner_environment(WANDB_SILENT="true", WANDB_CONSOLE="off")
     runner: BaseRunner | None = None
     run_dir: Path | None = None
     try:
@@ -210,7 +206,7 @@ def test_base_runner_wandb_accepts_nested_results(
     assert list(run_dir.glob("run-*.wandb"))
 
 
-def test_base_runner_mlflow_logs_flattened_result_once(tmp_path: Path, runner_factory) -> None:
+def test_mlflow_logs_flattened_result_once(tmp_path: Path, runner_factory) -> None:
     mlflow = pytest.importorskip("mlflow")
     tracking_uri = f"sqlite:///{tmp_path / 'mlflow.db'}"
     previous_tracking_uri = mlflow.get_tracking_uri()
@@ -254,9 +250,7 @@ def test_base_runner_mlflow_logs_flattened_result_once(tmp_path: Path, runner_fa
     }
 
 
-def test_base_runner_load_checkpoint_reports_restore_summary(
-    capsys: pytest.CaptureFixture[str], runner_factory
-) -> None:
+def test_load_checkpoint_reports_restore_summary(capsys: pytest.CaptureFixture[str], runner_factory) -> None:
     runner = runner_factory({"logging.enabled": False}, runner_type=CheckpointRunner)
     runner.optimizer = object()
     runner.scheduler = object()
@@ -280,9 +274,7 @@ def test_base_runner_load_checkpoint_reports_restore_summary(
     assert "scheduler=restored" in output
 
 
-def test_base_runner_prints_concise_failure_summary(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], runner_factory
-) -> None:
+def test_prints_concise_failure_summary(tmp_path: Path, capsys: pytest.CaptureFixture[str], runner_factory) -> None:
     runner = runner_factory()
     runner.log_crash_summary(RuntimeError("boom"))
 
@@ -293,7 +285,7 @@ def test_base_runner_prints_concise_failure_summary(
     assert f"workspace={runner.workspace.dir}" in output
 
 
-def test_base_runner_save_replaces_existing_file(tmp_path: Path, runner_factory) -> None:
+def test_save_replaces_existing_file(tmp_path: Path, runner_factory) -> None:
     runner = runner_factory()
     target = tmp_path / "payload.json"
     target.write_text('{"value": 0}', encoding="utf-8")
@@ -303,7 +295,7 @@ def test_base_runner_save_replaces_existing_file(tmp_path: Path, runner_factory)
     assert json.loads(target.read_text(encoding="utf-8")) == {"value": 1}
 
 
-def test_base_runner_from_checkpoint_path_restores_full_state(tmp_path: Path, runner_factory) -> None:
+def test_restore_checkpoint_path(tmp_path: Path, runner_factory) -> None:
     source = runner_factory({"seed": 1016, "score": {"split": "val"}})
     checkpoint_path = tmp_path / "runner-checkpoint.pth"
     source.set_seed()
@@ -335,7 +327,7 @@ def test_base_runner_from_checkpoint_path_restores_full_state(tmp_path: Path, ru
         restored.close()
 
 
-def test_base_runner_resume_keeps_current_checkpoint_sources(tmp_path: Path, runner_factory) -> None:
+def test_resume_keeps_current_checkpoint_sources(tmp_path: Path, runner_factory) -> None:
     runner = runner_factory({"checkpoint": "latest-a", "pretrained": "model-a"})
     checkpoint_runner = runner.config.dict()
     checkpoint_runner["checkpoint"] = "latest-b"
@@ -346,7 +338,7 @@ def test_base_runner_resume_keeps_current_checkpoint_sources(tmp_path: Path, run
     assert runner.config.pretrained == "model-a"
 
 
-def test_base_runner_resume_keeps_current_heartbeat_policy(tmp_path: Path, runner_factory) -> None:
+def test_resume_keeps_current_heartbeat_policy(tmp_path: Path, runner_factory) -> None:
     runner = runner_factory({"heartbeat": {"enabled": False, "interval_seconds": 60.0}})
     checkpoint_runner = runner.config.dict()
     checkpoint_runner["heartbeat"]["enabled"] = True
@@ -358,7 +350,7 @@ def test_base_runner_resume_keeps_current_heartbeat_policy(tmp_path: Path, runne
     assert runner.config.heartbeat.interval_seconds == 60.0
 
 
-def test_base_runner_resume_rejects_checkpoint_backend_changes(tmp_path: Path, runner_factory) -> None:
+def test_resume_rejects_checkpoint_backend_changes(tmp_path: Path, runner_factory) -> None:
     runner = runner_factory({"ckpt": {"backend": "dcp"}})
     checkpoint_runner = runner.config.dict()
     checkpoint_runner["ckpt"]["backend"] = "file"

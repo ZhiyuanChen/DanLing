@@ -45,7 +45,7 @@ def _diagnostic_runner(tmp_path, *, device="cpu", **profiling):
     )
 
 
-def test_diagnostic_future_retains_submission_context_and_phase_failure(tmp_path):
+def test_future_diagnostic_context(tmp_path):
     runner = _diagnostic_runner(tmp_path, events=True)
     diagnostics = RuntimeDiagnostics(runner)
     future = Future()
@@ -66,7 +66,7 @@ def test_diagnostic_future_retains_submission_context_and_phase_failure(tmp_path
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA allocator history requires CUDA")
-def test_cuda_allocator_snapshots_have_bounded_retention(tmp_path):
+def test_cuda_snapshot_retention(tmp_path):
     runner = _diagnostic_runner(
         tmp_path,
         device="cuda",
@@ -117,7 +117,6 @@ class _TelemetryRunner:
         self.loop_times = list(loop_times or [])
         self.config = {"performance": performance or {}}
         self.meters = _TelemetryMeters()
-        self.reset_calls: list[torch.device] = []
         self.step_log_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
 
     def all_reduce_device(self) -> torch.device:
@@ -145,10 +144,12 @@ class _TelemetryRunner:
 
 
 class RecordingLoopTelemetry(LoopTelemetry):
-    peak_memory: tuple[float | None, float | None] = (None, None)
+    def __init__(self, *args, **kwargs):
+        self.peak_memory = (9.0, 13.0)
+        super().__init__(*args, **kwargs)
 
     def reset_peak_memory_stats(self) -> None:
-        self.runner.reset_calls.append(self.runner.device)
+        self.peak_memory = (None, None)
 
     def current_peak_memory_mb(self) -> tuple[float | None, float | None]:
         return self.peak_memory
@@ -232,7 +233,7 @@ class TestLoopTelemetryAggregation:
             "mem_reserved_mb": 11.0,
         }
 
-    def test_merge_result_adds_configured_flop_metrics(self) -> None:
+    def test_flop_metrics(self) -> None:
         telemetry = LoopTelemetry(
             _TelemetryRunner(
                 performance={
@@ -262,7 +263,7 @@ class TestLoopTelemetryAggregation:
         assert result["hw_tflops"] == pytest.approx(20.0)
         assert result["hfu_pct"] == pytest.approx(50.0)
 
-    def test_loop_telemetry_consumes_interval_without_resetting_total(self) -> None:
+    def test_consume_interval_preserves_total(self) -> None:
         telemetry = LoopTelemetry(_TelemetryRunner(), start_time=0.0)
         telemetry.observe(
             iteration=0,
@@ -312,16 +313,16 @@ class TestLoopTelemetryAggregation:
 
 class TestLoopTelemetryRuntime:
 
-    def test_constructor_resets_peak_memory_only_when_logging(self) -> None:
+    def test_logging_memory_reset(self) -> None:
         logging_runner = _TelemetryRunner(log_interval=1)
         telemetry = RecordingLoopTelemetry(logging_runner, start_time=7.0)
 
         assert telemetry.start_time == 7.0
-        assert logging_runner.reset_calls == [logging_runner.device]
+        assert telemetry.current_peak_memory_mb() == (None, None)
 
         quiet_runner = _TelemetryRunner(log_interval=0)
-        RecordingLoopTelemetry(quiet_runner, start_time=8.0)
-        assert quiet_runner.reset_calls == []
+        quiet = RecordingLoopTelemetry(quiet_runner, start_time=8.0)
+        assert quiet.current_peak_memory_mb() == (9.0, 13.0)
 
     def test_emit_log_records_loss_rates(self) -> None:
         _, _, result = _emit_training_log()
@@ -333,13 +334,13 @@ class TestLoopTelemetryRuntime:
         assert result["mem_reserved_mb"] == 13.0
 
     def test_emit_log_resets_interval(self) -> None:
-        runner, telemetry, _ = _emit_training_log()
+        _, telemetry, _ = _emit_training_log()
 
         assert telemetry.log_time == 2.0
         assert telemetry.interval.sample_known is False
-        assert runner.reset_calls == [runner.device]
+        assert telemetry.current_peak_memory_mb() == (None, None)
 
-    def test_cpu_memory_metrics_are_zero_without_cuda(self) -> None:
+    def test_cpu_memory_metrics(self) -> None:
         device = torch.device("cpu")
 
         LoopTelemetry.reset_device_peak_memory_stats(device)

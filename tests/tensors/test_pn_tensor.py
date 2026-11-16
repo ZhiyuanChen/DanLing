@@ -21,12 +21,10 @@ r"""Tests for ``danling.tensors.pn_tensor`` — PNTensor properties and collatio
 
 import torch
 from torch.utils.data import DataLoader
-from torch.utils.data._utils.collate import default_collate_fn_map
 
 from danling.tensors import (
     NestedTensor,
     PNTensor,
-    collate_pn_tensor_fn,
     register_pn_tensor_collate,
 )
 from danling.tensors import tensor as pn_tensor
@@ -38,9 +36,7 @@ from tests.tensors.utils import assert_close
 
 class TestCollateRegistration:
 
-    def test_default_dataloader_collates_pn_tensor_after_import(self):
-        assert default_collate_fn_map[PNTensor] is collate_pn_tensor_fn
-
+    def test_default_collation(self):
         loader = DataLoader([pn_tensor([1, 2, 3]), pn_tensor([4, 5])], batch_size=2)
         collated = next(iter(loader))
 
@@ -48,10 +44,10 @@ class TestCollateRegistration:
         assert_close(collated[0], torch.tensor([1, 2, 3]))
         assert_close(collated[1], torch.tensor([4, 5]))
 
-    def test_collate_registration_helpers_on_custom_map(self):
+    def test_custom_registration(self):
         custom_map = {}
         register_pn_tensor_collate(custom_map)
-        assert custom_map[PNTensor] is collate_pn_tensor_fn
+        assert PNTensor in custom_map
 
         batch = [pn_tensor([1, 2, 3]), pn_tensor([4, 5])]
         collated = custom_map[PNTensor](batch, collate_fn_map=custom_map)

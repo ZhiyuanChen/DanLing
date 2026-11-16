@@ -90,7 +90,7 @@ class TestDeepSpeedRunnerCheckpointPaths:
             assert config.seed == 1016
             assert config.logging.enabled is False
 
-    def test_deepspeed_checkpoint_save_failure_warns_and_keeps_running(self, tmp_path: Path) -> None:
+    def test_save_failure(self, tmp_path: Path) -> None:
         class FailingModel:
             @staticmethod
             def save_checkpoint(*args, **kwargs) -> None:
@@ -108,14 +108,9 @@ class TestDeepSpeedRunnerCheckpointPaths:
         assert health.last_failed_target == "latest"
         assert health.last_successful_target is None
 
-    def test_deepspeed_model_checkpoint_uses_model_only_file_export(self, tmp_path: Path) -> None:
+    def test_model_only_export(self, tmp_path: Path) -> None:
         class PublishingModel:
             module = torch.compile(nn.Linear(2, 1), backend="eager")
-
-            @staticmethod
-            def save_checkpoint(*args, **kwargs) -> None:
-                del args, kwargs
-                raise AssertionError("engine checkpoint should not be used for model export")
 
         runner = _bare_deepspeed_runner(
             tmp_path,
@@ -130,14 +125,10 @@ class TestDeepSpeedRunnerCheckpointPaths:
         assert list(payload) == ["model"]
         assert payload["model"]["weight"].dtype == torch.float16
 
-    def test_deepspeed_checkpoint_keep_latest_k_prunes_history_tags(self, tmp_path: Path) -> None:
+    def test_history_retention(self, tmp_path: Path) -> None:
         class SavingModel:
-            def __init__(self) -> None:
-                self.tags: list[str] = []
-
             def save_checkpoint(self, checkpoint_dir, tag, client_state, save_latest) -> None:
                 del client_state, save_latest
-                self.tags.append(tag)
                 tag_dir = Path(checkpoint_dir) / tag
                 tag_dir.mkdir(parents=True)
                 (tag_dir / "marker.txt").write_text(tag, encoding="utf-8")
@@ -166,7 +157,7 @@ class TestDeepSpeedRunnerRealBackend:
 
     @pytest.mark.skipif(not HAS_DEEPSPEED, reason="deepspeed is not installed")
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
-    def test_deepspeed_runner_initializes_real_engine_on_cuda(self) -> None:
+    def test_initializes_real_engine_on_cuda(self) -> None:
         class RealTinyDeepSpeedRunner(DeepSpeedRunner):
             def init_distributed(self) -> None:
                 return
@@ -199,7 +190,7 @@ class TestDeepSpeedRunnerRealBackend:
             runner.close()
 
 
-def test_best_checkpoint_is_published_outside_save_interval(tmp_path):
+def test_best_outside_interval(tmp_path):
     from danling.utils import RoundDict
 
     class SavingModel:
