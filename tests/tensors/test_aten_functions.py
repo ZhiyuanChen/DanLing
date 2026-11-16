@@ -953,6 +953,10 @@ class TestElementwiseOps:
             (torch.ops.aten.silu.default, ()),
             (torch.ops.aten.gelu.default, ()),
             (torch.ops.aten.tanh.default, ()),
+            (torch.ops.aten.hardtanh.default, ()),
+            (torch.ops.aten.elu.default, ()),
+            (torch.ops.aten.celu.default, ()),
+            (torch.ops.aten.selu.default, ()),
         ],
     )
     def test_activation_branch_gradient(self, device, operation, args):
@@ -974,6 +978,55 @@ class TestElementwiseOps:
         assert_close(
             torch.autograd.grad(actual_grad.square().sum(), values),
             torch.autograd.grad(expected_grad.square().sum(), reference),
+        )
+
+    @pytest.mark.parametrize("name", ["hardtanh", "elu"])
+    @pytest.mark.parametrize("nested_position", [0, 1])
+    @pytest.mark.parametrize("expand", [False, True])
+    def test_activation_backward_broadcast(self, device, name, nested_position, expand):
+        def operation(left, right):
+            if name == "hardtanh":
+                return torch.ops.aten.hardtanh_backward.default(left, right, -1, 1)
+            return torch.ops.aten.elu_backward.default(left, 1.2, 0.8, 1.1, False, right)
+
+        shapes = ((1, 3), (2, 3)) if expand else ((3, 2), (3, 4))
+        parts = [
+            (
+                torch.full(shape, -0.2, device=device, dtype=torch.double)
+                if expand
+                else torch.randn(*shape, device=device, dtype=torch.double)
+            ).requires_grad_()
+            for shape in shapes
+        ]
+        references = [part.detach().clone().requires_grad_() for part in parts]
+        shared = (
+            torch.full((2, 3), -0.2, device=device, dtype=torch.double)
+            if expand
+            else torch.tensor([[-1.3], [0.2], [0.7]], device=device, dtype=torch.double)
+        ).requires_grad_()
+        reference_shared = shared.detach().clone().requires_grad_()
+        source = NT(parts, ragged_dims=(0,) if expand else (1,))
+        actual = operation(source, shared) if nested_position == 0 else operation(shared, source)
+        expected = [
+            operation(part, reference_shared) if nested_position == 0 else operation(reference_shared, part)
+            for part in references
+        ]
+        assert_close(actual.unbind(), expected)
+        gradients = torch.autograd.grad(actual.values().square().sum(), (*parts, shared), create_graph=True)
+        expected_gradients = torch.autograd.grad(
+            sum(part.square().sum() for part in expected), (*references, reference_shared), create_graph=True
+        )
+        assert type(gradients[-1]) is torch.Tensor
+        assert_close(gradients, expected_gradients)
+        assert_close(
+            torch.autograd.grad(
+                sum(gradient.square().sum() for gradient in gradients), (*parts, shared), allow_unused=True
+            ),
+            torch.autograd.grad(
+                sum(gradient.square().sum() for gradient in expected_gradients),
+                (*references, reference_shared),
+                allow_unused=True,
+            ),
         )
 
     @pytest.mark.parametrize(

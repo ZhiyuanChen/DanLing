@@ -35,6 +35,7 @@ import builtins
 import math
 from collections.abc import Sequence
 from contextlib import nullcontext, suppress
+from functools import partial
 from typing import TYPE_CHECKING, Any, cast
 
 import torch
@@ -9412,20 +9413,57 @@ def _view_like_nested(func, args, kwargs, *, logical=False, values=None, raw_out
 # ---------------------------------------------------------------------------
 
 
-def _binary_unwrap_handler(func, args, kwargs):
-    r"""Dispatch handler for backward ops that unwrap two NestedTensor args."""
+def _binary_unwrap_handler(func, args, kwargs, *, tensor_slots=(0, 1)):
+    r"""Align a backward kernel's tensor inputs in one packed coordinate system."""
     from .nested_tensor import NestedTensor
 
-    a, b = args[0], args[1]
-    sources = [x for x in (a, b) if isinstance(x, NestedTensor)]
+    sources = [args[index] for index in tensor_slots if isinstance(args[index], NestedTensor)]
     if not sources:
         return func(*args, **kwargs)
     if len(sources) == 2 and not sources[0]._has_same_layout(sources[1]):
         return per_element_fallback(func, args, kwargs)
     ref = sources[0]
-    va = a.values() if isinstance(a, NestedTensor) else a
-    vb = b.values() if isinstance(b, NestedTensor) else b
-    return ref._packed_like_unchecked(func(va, vb, *args[2:], **kwargs))
+    values = list(args)
+    if func in (aten.hardtanh_backward.default, aten.elu_backward.default) and len(sources) == 1:
+        left, right = (values[index] for index in tensor_slots)
+        other = right if isinstance(left, NestedTensor) else left
+        rank = ref._physical_shape.size(1)
+        if isinstance(other, Tensor) and 0 < other.dim() <= rank:
+            other = other.reshape((1,) * (rank - other.dim()) + tuple(other.shape))
+            # A shared dense operand broadcasts as a whole into each sample.
+            # Give both operands real domains before the joint packed resolver
+            # chooses the native kernel's output coordinates.
+            other = other.to(device=ref.device)
+            batched = other.unsqueeze(_get_batch_dim(ref)).expand(ref._logical_shape_from_physical_dims(other.shape))
+            aligned = _pack_uniform_logical_dense(ref, batched)
+            operands = (ref, aligned) if isinstance(left, NestedTensor) else (aligned, ref)
+            singleton = tuple(statically_known_true(other.shape[axis] == 1) for axis in ref._ragged_dims)
+            nonsingleton = tuple(statically_known_true(other.shape[axis] != 1) for axis in ref._ragged_dims)
+            if all(singleton) or all(nonsingleton):
+                target, source = (ref, aligned) if all(singleton) else (aligned, ref)
+                source_values = _broadcast_nested_to_values(target, source, allow_target_static_broadcast=True)
+                if source_values is not None:
+                    pair = (
+                        (target.values(), source_values) if operands[0] is target else (source_values, target.values())
+                    )
+                    values[tensor_slots[0]], values[tensor_slots[1]] = pair
+                    result = func(*values, **kwargs)
+                    if result.shape[1:] == target._packed_values.shape[1:]:
+                        return target._packed_like_unchecked(result)
+                    return _packed_with_static_tail_from_values(target, result)
+
+            def apply(left, right):
+                packed = list(args)
+                packed[tensor_slots[0]], packed[tensor_slots[1]] = left, right
+                return func(*packed, **kwargs)
+
+            return _binary_op_maybe_tensor(*operands, apply, _native_owner=True)
+    for index in tensor_slots:
+        resolved = _resolve_ternary_other(ref, values[index])
+        if resolved is _UNRESOLVED:
+            return per_element_fallback(func, args, kwargs)
+        values[index] = resolved
+    return ref._packed_like_unchecked(func(*values, **kwargs))
 
 
 def _packed_varying_softmax_group_indices(
@@ -10805,11 +10843,16 @@ def _make_order_stat_handler(default_dim):
 # ---------------------------------------------------------------------------
 
 _ATEN_HANDLER_TABLE: list[tuple] = [
-    # _binary_unwrap_handler — softmax/log_softmax backward
+    # Native backward kernels whose two tensor arguments share a packed layout.
     *(
         (op, _binary_unwrap_handler)
-        for op in [aten._softmax_backward_data.default, aten._log_softmax_backward_data.default]
+        for op in [
+            aten._softmax_backward_data.default,
+            aten._log_softmax_backward_data.default,
+            aten.hardtanh_backward.default,
+        ]
     ),
+    (aten.elu_backward.default, partial(_binary_unwrap_handler, tensor_slots=(0, 5))),
     # _dim_reduction_handler — parameterised dim reductions
     #   args: (ragged_fill, default_dim, keepdim_kw)
     #   ragged_fill=None → per_element_fallback for ragged dim-0

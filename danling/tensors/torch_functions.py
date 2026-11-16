@@ -7698,15 +7698,18 @@ def _make_public_packed_aten_handler(operation):
     return handler
 
 
-_CLAMP_ATEN_OPS = tuple(
+_PACKED_ATEN_POINTWISE_OPS = tuple(
     operation
     for packet in (torch.ops.aten.clamp, torch.ops.aten.clamp_min, torch.ops.aten.clamp_max)
     for operation in (packet.default, packet.Tensor)
+) + (
+    torch.ops.aten.hardtanh_backward.default,
+    torch.ops.aten.elu_backward.default,
 )
-_PUBLIC_ATEN_POINTWISE_OPS = (*ATEN_BINARY_ELEMENTWISE_OPS, *_CLAMP_ATEN_OPS)
-for _clamp_operation in _CLAMP_ATEN_OPS:
+_PUBLIC_ATEN_POINTWISE_OPS = (*ATEN_BINARY_ELEMENTWISE_OPS, *_PACKED_ATEN_POINTWISE_OPS)
+for _packed_operation in _PACKED_ATEN_POINTWISE_OPS:
     NestedTensorFuncRegistry.register(
-        _clamp_operation, _make_public_packed_aten_handler(_clamp_operation), compile_safe=True
+        _packed_operation, _make_public_packed_aten_handler(_packed_operation), compile_safe=True
     )
 
 
