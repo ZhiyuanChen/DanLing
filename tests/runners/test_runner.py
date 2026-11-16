@@ -48,7 +48,7 @@ class TinyRunner(_TinyRunnerMixin, Runner):
         ({"stack": "ds"}, "deepspeed"),
     ],
 )
-def test_runner_resolve_stack_normalizes_names(config, expected: str) -> None:
+def test_resolve_stack_normalizes_names(config, expected: str) -> None:
     assert Runner.resolve_stack(config) == expected
 
 
@@ -63,17 +63,17 @@ def test_runner_resolve_stack_normalizes_names(config, expected: str) -> None:
         ("ds", DeepSpeedRunner),
     ],
 )
-def test_runner_resolve_runner_class_maps_supported_stacks(stack: str, expected_cls: type[TorchRunner]) -> None:
+def test_stack_runner_class(stack: str, expected_cls: type[TorchRunner]) -> None:
     assert Runner.resolve_runner_class({"stack": stack}) is expected_cls
 
 
-def test_runner_defaults_to_torch_stack(runner_factory) -> None:
+def test_defaults_to_torch_stack(runner_factory) -> None:
     runner = runner_factory({"logging.enabled": False}, runner_type=TinyRunner)
     assert isinstance(runner, TorchRunner)
     assert runner.config.stack == "ddp"
 
 
-def test_runner_entrypoint_does_not_mutate_input_config() -> None:
+def test_input_config_unchanged() -> None:
     config = {"logging.enabled": False}
     runner = TinyRunner(config)
     try:
@@ -83,7 +83,7 @@ def test_runner_entrypoint_does_not_mutate_input_config() -> None:
         runner.close()
 
 
-def test_runner_direct_construction_initializes_once(tmp_path) -> None:
+def test_direct_construction_initializes_once(tmp_path) -> None:
     events: list[tuple[str, str]] = []
 
     class ImplRunner(BaseRunner):
@@ -106,6 +106,6 @@ def test_runner_direct_construction_initializes_once(tmp_path) -> None:
         RUNNER_REGISTRY["torch"] = original_torch
 
 
-def test_runner_unknown_stack_raises() -> None:
+def test_unknown_stack_raises() -> None:
     with pytest.raises(ValueError, match="Unknown stack"):
         Runner.resolve_runner_class({"stack": "unknown_stack"})

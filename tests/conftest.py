@@ -45,6 +45,15 @@ def run_isolated():
     return run
 
 
+@pytest.fixture
+def isolated_compiler():
+    import torch
+
+    torch.compiler.reset()
+    yield
+    torch.compiler.reset()
+
+
 @pytest.fixture(autouse=True)
 def seed_all():
     import random

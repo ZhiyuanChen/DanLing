@@ -20,7 +20,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 import torch
@@ -58,7 +57,7 @@ def _batch() -> dict[str, torch.Tensor]:
     }
 
 
-def test_graph_runner_train_step_matches_eager_update() -> None:
+def test_train_step_matches_eager_update() -> None:
     eager = EagerRunner({"logging.enabled": False})
     graph = Runner({"logging.enabled": False})
     try:
@@ -79,7 +78,7 @@ def test_graph_runner_train_step_matches_eager_update() -> None:
 
 
 @pytest.mark.parametrize("empty_first", [False, True])
-def test_graph_runner_zero_weight_discards_nonfinite_vjp(empty_first) -> None:
+def test_zero_weight_discards_nonfinite_vjp(empty_first) -> None:
     runner = Runner({"device": "cpu", "logging.enabled": False, "accum_steps": 2, "logging.interval": 0})
     try:
         runner.model.double()
@@ -106,7 +105,7 @@ def test_graph_runner_zero_weight_discards_nonfinite_vjp(empty_first) -> None:
         runner.close()
 
 
-def test_graph_runner_replaces_nonfinite_loss_without_accumulating_gradients() -> None:
+def test_nonfinite_loss_preserves_parameters() -> None:
     runner = Runner({"logging.enabled": False, "skip_nonfinite_loss": True})
     try:
         assert runner.model is not None
@@ -126,54 +125,49 @@ def test_graph_runner_replaces_nonfinite_loss_without_accumulating_gradients() -
         runner.close()
 
 
-def test_graph_runner_rejects_non_default_memory_policy() -> None:
+def test_rejects_non_default_memory_policy() -> None:
     with pytest.raises(NotImplementedError, match="memory_policy"):
         Runner({"logging.enabled": False, "compile": {"memory_policy": "budget_limited_offload"}})
 
 
-def test_graph_runner_requires_compile_for_cache_artifacts() -> None:
+def test_requires_compile_for_cache_artifacts() -> None:
     with pytest.raises(ValueError, match="precompile_artifact_dir"):
         Runner({"logging.enabled": False, "compile": {"precompile_artifact_dir": "/tmp/danling-graph-cache"}})
 
 
 @pytest.fixture
-def cache_runner(tmp_path: Path, runner_factory, monkeypatch):
-    monkeypatch.setattr(torch.compiler, "save_cache_artifacts", lambda: None)
-    return runner_factory(
-        {"device": "cpu", "compile": {"enabled": True, "backend": "eager", "precompile_artifact_dir": str(tmp_path)}},
-        runner_type=Runner,
-    )
+def cache_config(tmp_path):
+    return {
+        "device": "cpu",
+        "logging.enabled": False,
+        "compile": {"enabled": True, "backend": "inductor", "precompile_artifact_dir": str(tmp_path)},
+    }
 
 
 class TestCache:
-    def test_save(self, cache_runner, monkeypatch):
-        monkeypatch.setattr(torch.compiler, "save_cache_artifacts", lambda: (b"cache-bytes", object()))
-        cache_runner.train_step(_batch())
-        artifact_path = cache_runner.graph_cache_artifact_path()
-        assert artifact_path.read_bytes() == b"cache-bytes"
-        metadata_path = cache_runner.graph_cache_metadata_path(artifact_path)
+    @pytest.mark.parametrize("stale", [False, True])
+    def test_round_trip(self, runner_factory, cache_config, isolated_compiler, stale):
+        source = runner_factory(cache_config, runner_type=Runner)
+        source.train_step(_batch())
+        artifact = source.graph_cache_artifact_path()
+        metadata_path = source.graph_cache_metadata_path(artifact)
+        assert artifact.is_file() and artifact.stat().st_size
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-        assert metadata["format"] == "danling.graph_cache.v1"
-        assert metadata["fingerprint"] == cache_runner.graph_artifact_fingerprint()
-        assert metadata["compile"]["backend"] == "eager"
+        assert metadata["fingerprint"] == source.graph_artifact_fingerprint()
+        source.close()
 
-    def test_load(self, cache_runner, monkeypatch):
-        loaded = []
-        monkeypatch.setattr(torch.compiler, "load_cache_artifacts", loaded.append)
-        artifact_path = cache_runner.graph_cache_artifact_path()
-        artifact_path.parent.mkdir(parents=True, exist_ok=True)
-        artifact_path.write_bytes(b"existing-cache")
-        cache_runner.train_step(_batch())
-        assert loaded == [b"existing-cache"]
-
-    def test_stale(self, cache_runner, monkeypatch):
-        loaded = []
-        monkeypatch.setattr(torch.compiler, "load_cache_artifacts", loaded.append)
-        artifact_path = cache_runner.graph_cache_artifact_path()
-        artifact_path.parent.mkdir(parents=True, exist_ok=True)
-        artifact_path.write_bytes(b"stale-cache")
-        metadata_path = cache_runner.graph_cache_metadata_path(artifact_path)
-        metadata_path.write_text(json.dumps({"fingerprint": "stale"}), encoding="utf-8")
-        with pytest.warns(RuntimeWarning, match="metadata fingerprint"):
-            cache_runner.train_step(_batch())
-        assert loaded == []
+        if stale:
+            metadata["fingerprint"] = "stale"
+            metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+            artifact.write_bytes(b"invalid cache that must be ignored")
+        restored = runner_factory(cache_config, runner_type=Runner)
+        reference = runner_factory({"device": "cpu"}, runner_type=EagerRunner)
+        reference.model.load_state_dict(restored.model.state_dict())
+        if stale:
+            with pytest.warns(RuntimeWarning, match="metadata fingerprint"):
+                actual = restored.train_step(_batch())
+        else:
+            actual = restored.train_step(_batch())
+        expected = reference.train_step(_batch())
+        torch.testing.assert_close(actual, expected)
+        torch.testing.assert_close(restored.model.state_dict(), reference.model.state_dict())

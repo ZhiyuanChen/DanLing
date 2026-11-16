@@ -30,6 +30,7 @@ from torch.nn import functional as F
 
 from danling.tensors import NestedTensor, create_flex_block_mask
 from tests.tensors.utils import (
+    FLOAT_DTYPES,
     assert_close,
     assert_nested_function_matches,
     low_precision_cuda_tolerances,
@@ -188,6 +189,55 @@ class TestActivations:
         output = compiled(nt)
         reference = F.gelu(nt.tensor)
         assert_close(output, reference)
+
+    def test_prelu_channels(self):
+        parts = [torch.randn(2, 3, 4), torch.randn(2, 3, 5)]
+        weight = torch.tensor([0.1, 0.5], requires_grad=True)
+        output = F.prelu(NT(parts), weight)
+        for actual, source in zip(output, parts):
+            assert actual.shape == source.shape
+            torch.testing.assert_close(actual, F.prelu(source.unsqueeze(0), weight).squeeze(0))
+
+    def test_inplace_relu_materialization(self):
+        source = NT(torch.tensor([-1.0, 2.0]), torch.tensor([-3.0, 4.0, -5.0]))
+        source.tensor  # Materialize a view before the mutation.
+        result = F.relu(source, inplace=True)
+        assert result is source
+        torch.testing.assert_close(source[0], torch.tensor([0.0, 2.0]))
+        torch.testing.assert_close(source[1], torch.tensor([0.0, 4.0, 0.0]))
+        torch.testing.assert_close(source.tensor[1], torch.tensor([0.0, 4.0, 0.0]))
+
+    @pytest.mark.parametrize("nonfinite", (False, True))
+    def test_compiled_prelu_channels(self, device, nonfinite):
+        torch.compiler.reset()
+        parts = [torch.randn(3, length, device=device, dtype=torch.float64) for length in (2, 4)]
+        if nonfinite:
+            parts[0][0, 0] = float("inf")
+        source = NT(parts, ragged_dims=(0, 1))
+        values = source.values().detach().requires_grad_()
+        weight = torch.randn(3, device=device, dtype=torch.float64, requires_grad=True)
+        if nonfinite:
+            with torch.no_grad():
+                weight[0] = float("nan")
+        reference_values = values.detach().clone().requires_grad_()
+        reference_weight = weight.detach().clone().requires_grad_()
+        references = NT(
+            [F.prelu(part.unsqueeze(0), reference_weight).squeeze(0) for part in source.packed_like(reference_values)],
+            ragged_dims=(0, 1),
+        ).values()
+        run = torch.compile(
+            lambda template, packed, slopes: F.prelu(template.packed_like(packed), slopes).values(),
+            backend="aot_eager",
+            fullgraph=True,
+            dynamic=True,
+        )
+        actual = run(source, values, weight)
+        assert_close(actual, references, equal_nan=True)
+        cotangent = torch.randn_like(actual)
+        actual_grads = torch.autograd.grad(actual, (values, weight), cotangent)
+        expected_grads = torch.autograd.grad(references, (reference_values, reference_weight), cotangent)
+        for actual_grad, expected_grad in zip(actual_grads, expected_grads):
+            assert_close(actual_grad, expected_grad, equal_nan=True)
 
 
 class TestAdaptiveAvgPool:
@@ -387,7 +437,7 @@ class TestClassificationLosses:
         )
         assert_close(output, reference)
 
-    def test_binary_cross_entropy_with_logits_after_method_squeeze_preserves_grad(self, device, float_dtype):
+    def test_squeezed_logits_derivatives(self, device, float_dtype):
         values = torch.randn(3, 3, 1, device=device, dtype=float_dtype, requires_grad=True)
         reference_values = values.detach().clone().requires_grad_()
         logits = NT(values.split((2, 1)))
@@ -529,44 +579,51 @@ class TestClassificationLosses:
         reference = F.soft_margin_loss(torch.cat(tuple(inp), dim=0), torch.cat(tuple(tgt), dim=0), reduction="sum")
         assert_close(output, reference, atol=1e-6, rtol=1e-6)
 
+    def test_kl_batchmean(self):
+        parts = [torch.log(torch.tensor([[0.2, 0.8], [0.4, 0.6]])), torch.log(torch.tensor([[0.6, 0.4]]))]
+        parts = [part.requires_grad_() for part in parts]
+        targets = [torch.full_like(part, 0.5) for part in parts]
+        actual = F.kl_div(NT(parts), NT(targets), reduction="batchmean")
+        expected = sum(F.kl_div(part, target, reduction="sum") for part, target in zip(parts, targets)) / 2
+        torch.testing.assert_close(actual, expected)
+        for gradient in torch.autograd.grad(actual, parts):
+            torch.testing.assert_close(gradient, torch.full_like(gradient, -0.25))
 
+    def test_probability_weight_positions(self):
+        parts = [torch.tensor([[0.2], [0.4]]), torch.tensor([[0.8]])]
+        weights = torch.tensor([[[1.0], [2.0]], [[3.0], [100.0]]])
+        actual = F.binary_cross_entropy(
+            NT(parts), NT([torch.zeros_like(part) for part in parts]), weight=weights, reduction="sum"
+        )
+        expected = sum(
+            F.binary_cross_entropy(part, torch.zeros_like(part), weight=weights[i, : len(part)], reduction="sum")
+            for i, part in enumerate(parts)
+        )
+        torch.testing.assert_close(actual, expected)
+
+
+@pytest.mark.usefixtures("isolated_compiler")
 class TestCompile:
 
-    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    def test_nn_functional_compile_matches_reference(self):
-        nt = NT(
+    @pytest.mark.parametrize("name", ["linear", "softmax", "log_softmax", "layer_norm", "rms_norm"])
+    def test_functional(self, name):
+        source = NT(
             [
                 torch.tensor([[3.0, 1.0], [4.0, 2.0], [0.0, 5.0]]),
                 torch.tensor([[7.0, 8.0], [1.0, 0.0], [9.0, 6.0], [2.0, 3.0], [5.0, 4.0]]),
             ]
         )
-        weight = torch.tensor([[0.2, -0.5], [1.1, 0.3]])
-        bias = torch.tensor([0.4, -0.2])
-
-        def _compile(fn):
-            return torch.compile(fn, backend="inductor", fullgraph=True)
-
-        linear_fn = _compile(lambda x: F.linear(x, weight, bias))
-        softmax_fn = _compile(lambda x: F.softmax(x, dim=1))
-        log_softmax_fn = _compile(lambda x: F.log_softmax(x, dim=1))
-        layer_norm_fn = _compile(lambda x: F.layer_norm(x, (2,)))
-        rms_norm_fn = _compile(lambda x: F.rms_norm(x, (2,)))
-        linear_comp = linear_fn(nt)
-        softmax_comp = softmax_fn(nt)
-        log_softmax_comp = log_softmax_fn(nt)
-        layer_norm_comp = layer_norm_fn(nt)
-        rms_norm_comp = rms_norm_fn(nt)
-
-        ref_linear = NT([F.linear(t, weight, bias) for t in nt], **reference_options(nt))
-        ref_softmax = NT([F.softmax(t, dim=0) for t in nt], **reference_options(nt))
-        ref_log_softmax = NT([F.log_softmax(t, dim=0) for t in nt], **reference_options(nt))
-        ref_layer_norm = NT([F.layer_norm(t, (2,)) for t in nt], **reference_options(nt))
-        ref_rms_norm = NT([F.rms_norm(t, (2,)) for t in nt], **reference_options(nt))
-        assert_close(linear_comp, ref_linear)
-        assert_close(softmax_comp, ref_softmax)
-        assert_close(log_softmax_comp, ref_log_softmax)
-        assert_close(layer_norm_comp, ref_layer_norm)
-        assert_close(rms_norm_comp, ref_rms_norm)
+        if name == "linear":
+            options = {"weight": torch.tensor([[0.2, -0.5], [1.1, 0.3]]), "bias": torch.tensor([0.4, -0.2])}
+        elif name in {"softmax", "log_softmax"}:
+            options = {"dim": 1}
+        else:
+            options = {"normalized_shape": (2,)}
+        reference_options = {**options, "dim": 0} if "dim" in options else options
+        operation = getattr(F, name)
+        output = torch.compile(lambda value: operation(value, **options), backend="inductor", fullgraph=True)(source)
+        expected = NT([operation(part, **reference_options) for part in source])
+        assert_close(output, expected)
 
 
 class TestConv:
@@ -794,7 +851,7 @@ class TestDropout:
             (F.feature_alpha_dropout, (2, 3)),
         ],
     )
-    def test_inplace_channel_dropout_preserves_aliases_and_gradients(self, activation, shape, device):
+    def test_channel_dropout_aliases(self, activation, shape, device):
         parts = [
             torch.randn(*shape, length, device=device, dtype=torch.float64, requires_grad=True) for length in (2, 4)
         ]
@@ -876,7 +933,7 @@ class TestEmbeddingOps:
         assert_close(output, reference, atol=1e-6, rtol=1e-6)
 
     @pytest.mark.parametrize("ragged_dims", [(0, 1), (1, 0)])
-    def test_embedding_multi_ragged_values_and_vjp(
+    def test_multi_ragged_derivatives(
         self,
         device,
         float_dtype,
@@ -904,7 +961,7 @@ class TestEmbeddingOps:
         assert_close(output_gradient, reference_gradient)
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    def test_embedding_multi_ragged_compiles_with_vjp(self, device):
+    def test_compiled_multi_ragged_derivatives(self, device):
         compiled = torch.compile(
             lambda indices, weight: F.embedding(indices, weight).square().values(),
             backend="aot_eager",
@@ -942,7 +999,7 @@ class TestEmbeddingOps:
         assert_close(output, reference, atol=1e-6, rtol=1e-6)
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    def test_embedding_bag_compile_fullgraph_default_offsets(self, device, float_dtype):
+    def test_compiled_default_offsets(self, device, float_dtype):
         weight = torch.randn(16, 8, device=device, dtype=float_dtype)
         nt_idx = NT(
             [
@@ -987,6 +1044,22 @@ class TestEmbeddingOps:
             **reference_options(nt_idx),
         )
         assert_close(output, reference, atol=1e-6, rtol=1e-6)
+
+    def test_matrix_bags(self):
+        parts = [torch.tensor([[0, 1], [2, 3]]), torch.tensor([[1, 2]])]
+        weight = torch.arange(12.0).reshape(4, 3)
+        actual = F.embedding_bag(NT(parts), weight)
+        for result, part in zip(actual, parts):
+            torch.testing.assert_close(result, F.embedding_bag(part, weight))
+
+    def test_compiled_explicit_offsets(self):
+        source = NT(torch.tensor([0, 1, 2]), torch.tensor([1, 2, 3, 0]))
+        weight = torch.arange(12.0).reshape(4, 3)
+        offsets = torch.tensor([0, 2])
+        compiled = torch.compile(F.embedding_bag, backend="aot_eager", fullgraph=True)
+        actual = compiled(source, weight, offsets=offsets, mode="sum")
+        for result, part in zip(actual, source):
+            torch.testing.assert_close(result, F.embedding_bag(part, weight, offsets=offsets, mode="sum"))
 
 
 class TestFractionalMaxPool:
@@ -1067,6 +1140,45 @@ class TestFractionalMaxPool:
         assert_close(output, reference_output)
         assert_close(idx, reference_idx)
 
+    @pytest.mark.parametrize("spatial_rank", (2, 3))
+    @pytest.mark.parametrize("ratio", (False, True))
+    @pytest.mark.parametrize("backend", (None, "aot_eager", "inductor"))
+    def test_compiled_indices_derivatives(self, device, backend, spatial_rank, ratio):
+        torch.compiler.reset()
+        pool = F.fractional_max_pool2d if spatial_rank == 2 else F.fractional_max_pool3d
+        spatial_shapes = ((5, 6), (7, 4)) if spatial_rank == 2 else ((4, 5, 6), (6, 7, 4))
+        parts = [
+            torch.randn(2, *shape, device=device, dtype=torch.float64, requires_grad=True) for shape in spatial_shapes
+        ]
+        template = NT(parts, ragged_dims=tuple(range(1, spatial_rank + 1)))
+        values = template.values().detach().requires_grad_()
+        reference_parts = [part.detach().clone().requires_grad_() for part in parts]
+        samples = torch.full((1, 2, spatial_rank), 0.37, device=device, dtype=torch.float64) if ratio else None
+        kwargs = {"output_ratio": (0.5,) * spatial_rank} if ratio else {"output_size": 2}
+        expected_outputs, expected_indices = [], []
+        torch.manual_seed(716)
+        for part in reference_parts:
+            output, index = pool(part, 2, return_indices=True, _random_samples=samples, **kwargs)
+            expected_outputs.append(output)
+            expected_indices.append(index)
+        expected = NT(expected_outputs, ragged_dims=template.ragged_dims)
+
+        def run(source, packed):
+            return pool(source.packed_like(packed), 2, return_indices=True, _random_samples=samples, **kwargs)
+
+        if backend is not None:
+            run = torch.compile(run, backend=backend, fullgraph=True, dynamic=True)
+        torch.manual_seed(716)
+        actual, actual_indices = run(template, values)
+        assert_close(actual, expected)
+        assert_close(actual_indices, NT(expected_indices, ragged_dims=template.ragged_dims))
+        cotangent = torch.randn_like(actual.values())
+        expected_grads = torch.autograd.grad(expected.values(), reference_parts, cotangent)
+        assert_close(
+            torch.autograd.grad(actual.values(), values, cotangent)[0],
+            NT(expected_grads, ragged_dims=template.ragged_dims).values(),
+        )
+
 
 class TestGridOps:
 
@@ -1096,6 +1208,18 @@ class TestGridOps:
         output = F.grid_sample(nt_imgs, grid, align_corners=False)
         reference = torch.stack([F.grid_sample(img, grid, align_corners=False) for img in nt_imgs])
         assert_close(output, reference, atol=1e-6, rtol=1e-6)
+
+    def test_natural_batch_dimensions(self):
+        parts = [torch.randn(2, 3, 4), torch.randn(2, 4, 5)]
+        grids = [torch.zeros(2, 2, 2), torch.zeros(3, 3, 2)]
+        actual = F.grid_sample(NT(parts), NT(grids), align_corners=False)
+        for result, source, grid in zip(actual, parts, grids):
+            torch.testing.assert_close(result, F.grid_sample(source[None], grid[None], align_corners=False)[0])
+        theta = [torch.eye(2, 3), torch.eye(2, 3)]
+        actual = F.affine_grid(NT(theta), (2, 1, 3, 4), align_corners=False)
+        expected = F.affine_grid(torch.stack(theta), (2, 1, 3, 4), align_corners=False)
+        for result, reference in zip(actual, expected):
+            torch.testing.assert_close(result, reference)
 
 
 class TestInterpolate:
@@ -1146,6 +1270,7 @@ class TestInterpolate:
         assert_close(output, reference)
 
 
+@pytest.mark.usefixtures("isolated_compiler")
 class TestLinear:
 
     @pytest.mark.parametrize("ragged_dims", [(0,), (0, 1), (1, 0)])
@@ -1181,49 +1306,32 @@ class TestLinear:
         reference = NT([F.linear(t, weight, bias) for t in input], **reference_options(input))
         assert_close(output, reference)
 
-    def test_permuted_static_features_values_and_vjp(self, device, float_dtype):
-        template = NT(
-            [torch.empty(2, 78, 2, device=device), torch.empty(5, 78, 2, device=device)],
-            ragged_dims=(0,),
-        )
+    @pytest.mark.parametrize(
+        ("backend", "float_dtype"),
+        [pytest.param(None, dtype, id=str(dtype)) for dtype in FLOAT_DTYPES]
+        + [pytest.param("aot_eager", torch.float32, id="compiled")],
+        indirect=["float_dtype"],
+    )
+    def test_permuted_features(self, device, float_dtype, backend):
+        template = NT([torch.empty(2, 78, 2, device=device), torch.empty(5, 78, 2, device=device)], ragged_dims=(0,))
         values = torch.randn_like(template.values(), dtype=float_dtype, requires_grad=True)
         weight = torch.randn(8, 78, device=device, dtype=float_dtype, requires_grad=True)
         bias = torch.randn(8, device=device, dtype=float_dtype, requires_grad=True)
-        input = template.packed_like(values).movedim(2, 3)
+
+        def linear(template, values, weight, bias):
+            return F.linear(template.packed_like(values).movedim(2, 3), weight, bias)
+
+        run = linear if backend is None else torch.compile(linear, backend=backend, fullgraph=True, dynamic=True)
+        output = run(template, values, weight, bias)
         expected = F.linear(values.movedim(1, 2), weight, bias)
-
-        output = F.linear(input, weight, bias)
-
         leaves = (values, weight, bias)
         cotangent = torch.randn_like(expected)
-        actual_gradients = torch.autograd.grad(output.values(), leaves, cotangent, retain_graph=True)
+        actual_gradients = torch.autograd.grad(output.values(), leaves, cotangent)
         expected_gradients = torch.autograd.grad(expected, leaves, cotangent)
         assert output.shape == torch.Size((2, 5, 2, 8))
         assert output.ragged_dims == (0,)
         assert_close(output.values(), expected)
-        for actual, reference in zip(actual_gradients, expected_gradients, strict=True):
-            assert_close(actual, reference)
-
-    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    def test_permuted_static_features_compile_with_vjp(self, device):
-        def run(template, values, weight, bias):
-            input = template.packed_like(values).movedim(2, 3)
-            return F.linear(input, weight, bias).values()
-
-        compiled = torch.compile(run, backend="aot_eager", fullgraph=True, dynamic=True)
-        template = NT([torch.empty(2, 78, 2), torch.empty(3, 78, 2)], ragged_dims=(0,))
-        values = torch.randn_like(template.values(), device=device, requires_grad=True)
-        weight = torch.randn(8, 78, device=device, requires_grad=True)
-        bias = torch.randn(8, device=device, requires_grad=True)
-        expected = F.linear(values.movedim(1, 2), weight, bias)
-        output = compiled(template, values, weight, bias)
-        leaves = (values, weight, bias)
-        cotangent = torch.randn_like(expected)
-        actual_gradients = torch.autograd.grad(output, leaves, cotangent)
-        expected_gradients = torch.autograd.grad(expected, leaves, cotangent)
-        assert_close(output, expected)
-        for actual, reference in zip(actual_gradients, expected_gradients, strict=True):
-            assert_close(actual, reference)
+        assert_close(actual_gradients, expected_gradients)
 
 
 class TestLpPool:
@@ -1465,7 +1573,7 @@ class TestModuleIntegration:
         assert_close(layer.bias.grad, torch.full_like(layer.bias, sum(len(element) for element in input)))
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    def test_compiled_linear_module_dynamic_fullgraph_gradients(self, device):
+    def test_compiled_linear_derivatives(self, device):
         layer = nn.Linear(3, 4).to(device)
         reference_layer = nn.Linear(3, 4).to(device)
         reference_layer.load_state_dict(layer.state_dict())
@@ -1845,7 +1953,7 @@ class TestMultiHeadAttentionForward:
             rtol=1e-5,
         )
 
-    def test_mha_batch_first_mismatch_raises_clear_error(self):
+    def test_batch_axis_errors(self):
         embed_dim = 4
         num_heads = 2
         query = NestedTensor([torch.randn(3, embed_dim), torch.randn(2, embed_dim)], batch_first=True)
@@ -1894,7 +2002,7 @@ class TestMultiHeadAttentionForward:
                 torch.randn(4),
             )
 
-    def test_multi_head_attention_batch_first_false(self, device, float_dtype):
+    def test_nonleading_batch(self, device, float_dtype):
         embed_dim = 4
         num_heads = 2
         lengths = [2, 3]
@@ -2006,7 +2114,7 @@ class TestMultiHeadAttentionForward:
             rtol=1e-5,
         )
 
-    def test_multi_head_attention_custom_mask_value(self):
+    def test_custom_mask_value(self):
         torch.manual_seed(1016)
         embed_dim = 4
         num_heads = 2
@@ -2089,7 +2197,7 @@ class TestMultiHeadAttentionForward:
         assert attn_weights is None
         assert_close(attn_output, reference, atol=1e-5)
 
-    def test_multi_head_attention_masks_padding_tokens(self, device, float_dtype):
+    def test_padding_tokens(self, device, float_dtype):
         embed_dim = 1
         num_heads = 1
         mha = nn.MultiheadAttention(embed_dim, num_heads, batch_first=False, dropout=0.0).to(
@@ -2206,7 +2314,7 @@ class TestMultiHeadAttentionForward:
 
     @pytest.mark.parametrize("batch_first", [True, False])
     @pytest.mark.parametrize("length", [3, 12])
-    def test_mha_feature_axis_values_and_gradients(self, device, batch_first, length):
+    def test_feature_axis_derivatives(self, device, batch_first, length):
         model = nn.MultiheadAttention(8, 2, dropout=0.0, batch_first=batch_first).to(device).train()
         reference = deepcopy(model)
         parts = [torch.randn(length, 8, device=device, requires_grad=True) for _ in range(2)]
@@ -2227,7 +2335,7 @@ class TestMultiHeadAttentionForward:
 
     @pytest.mark.parametrize("batch_first", [True, False])
     @pytest.mark.parametrize("add_zero_attn", [False, True])
-    def test_mha_causal_mask_values_and_gradients(self, device, batch_first, add_zero_attn):
+    def test_causal_mask_derivatives(self, device, batch_first, add_zero_attn):
         model = (
             nn.MultiheadAttention(8, 2, dropout=0.0, batch_first=batch_first, add_zero_attn=add_zero_attn)
             .to(device)
@@ -2258,7 +2366,7 @@ class TestMultiHeadAttentionForward:
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
     @pytest.mark.parametrize("batch_first", [True, False])
     @pytest.mark.parametrize(("causal", "cross_attention"), [(False, False), (True, False), (False, True)])
-    def test_compiled_mha_wrapper_values_and_gradients(self, batch_first, causal, cross_attention):
+    def test_compiled_wrapper_derivatives(self, batch_first, causal, cross_attention):
         if not torch.cuda.is_bf16_supported() or torch.cuda.get_device_capability()[0] < 8:
             pytest.skip("BF16 attention requires an Ampere-or-newer GPU")
 
@@ -2297,6 +2405,17 @@ class TestMultiHeadAttentionForward:
             actual_grads = torch.autograd.grad((actual.values().float() * probe.float()).sum(), actual_inputs)
             expected_grads = torch.autograd.grad((expected.values().float() * probe.float()).sum(), expected_inputs)
             torch.testing.assert_close(actual_grads, expected_grads, atol=5e-2, rtol=2e-2)
+
+    @pytest.mark.parametrize("mask_dtype", [torch.bool, torch.float64])
+    def test_structural_padding_mask(self, mask_dtype):
+        parts = [torch.randn(length, 4, dtype=torch.float64) for length in (2, 4)]
+        model = nn.MultiheadAttention(4, 2, batch_first=True, dtype=torch.float64).eval()
+        source = NT(parts, padding_value=13)
+        mask = torch.zeros(2, 4, dtype=mask_dtype)
+        actual, _ = model(source, source, source, key_padding_mask=mask, need_weights=True)
+        for i, (result, part) in enumerate(zip(actual, parts)):
+            expected, _ = model(part[None], part[None], part[None], key_padding_mask=mask[i : i + 1, : len(part)])
+            torch.testing.assert_close(result, expected[0])
 
 
 class TestTransformer:
@@ -2525,7 +2644,78 @@ class TestNormalizationOps:
         reference = NT([F.rms_norm(t, (4,)) for t in nt], **reference_options(nt))
         assert_close(output, reference, atol=1e-5, rtol=1e-5)
 
+    def test_instance_running_statistics(self):
+        parts = [torch.arange(8.0).reshape(2, 4), torch.arange(8.0, 16.0).reshape(2, 4)]
+        running_mean, running_var = torch.zeros(2), torch.ones(2)
+        expected_mean, expected_var = running_mean.clone(), running_var.clone()
+        actual = F.instance_norm(NT(parts), running_mean, running_var, use_input_stats=True)
+        expected = F.instance_norm(torch.stack(parts), expected_mean, expected_var, use_input_stats=True)
+        for result, reference in zip(actual, expected):
+            torch.testing.assert_close(result, reference)
+        torch.testing.assert_close(running_mean, expected_mean)
+        torch.testing.assert_close(running_var, expected_var)
 
+    @pytest.mark.parametrize("ragged_channels", (False, True))
+    @pytest.mark.parametrize("backend", ("aot_eager", "inductor"))
+    def test_compiled_response_norm(self, device, backend, ragged_channels):
+        torch.compiler.reset()
+        shapes = ((2, 3, 4), (4, 2, 5)) if ragged_channels else ((3, 2, 4), (3, 4, 2))
+        parts = [torch.randn(shape, device=device, dtype=torch.float64, requires_grad=True) for shape in shapes]
+        template = NT(parts, padding_value=float("nan"))
+        values = template.values().detach().requires_grad_()
+        reference_parts = [part.detach().clone().requires_grad_() for part in parts]
+        run = torch.compile(
+            lambda source, packed: F.local_response_norm(source.packed_like(packed), 4, alpha=0.2, beta=0.6).values(),
+            backend=backend,
+            fullgraph=True,
+            dynamic=True,
+        )
+        actual = run(template, values)
+        reference = NT(
+            [F.local_response_norm(part.unsqueeze(0), 4, alpha=0.2, beta=0.6).squeeze(0) for part in reference_parts],
+            ragged_dims=template.ragged_dims,
+        )
+        assert_close(actual, reference.values())
+        cotangent = torch.randn_like(actual)
+        actual_grad = torch.autograd.grad(actual, values, cotangent)[0]
+        reference_grads = torch.autograd.grad(reference.values(), reference_parts, cotangent)
+        assert_close(actual_grad, NT(reference_grads, ragged_dims=template.ragged_dims).values())
+
+    @pytest.mark.parametrize("dtype", (torch.float16, torch.bfloat16))
+    @pytest.mark.parametrize("ragged_channels", (False, True))
+    @pytest.mark.parametrize("backend", (None, "inductor"))
+    def test_low_precision_response_norm(self, device, dtype, ragged_channels, backend):
+        if device.type != "cuda":
+            pytest.skip("low precision native LRN reference requires CUDA")
+        torch.compiler.reset()
+        shapes = ((3, 2), (4, 3)) if ragged_channels else ((3, 2), (3, 4))
+        parts = [torch.full(shape, 180.0, device=device, dtype=dtype) for shape in shapes]
+        source = NT(parts, ragged_dims=(0, 1) if ragged_channels else (1,))
+        values = source.values().detach().requires_grad_()
+        references = [part.detach().clone().requires_grad_() for part in parts]
+        expected = NT(
+            [F.local_response_norm(part.unsqueeze(0), 3, alpha=0.2, beta=0.6).squeeze(0) for part in references],
+            ragged_dims=source.ragged_dims,
+        )
+
+        def run(template, packed):
+            return F.local_response_norm(template.packed_like(packed), 3, alpha=0.2, beta=0.6).values()
+
+        if backend is not None:
+            run = torch.compile(run, backend=backend, fullgraph=True, dynamic=True)
+        actual = run(source, values)
+        tolerances = {"rtol": 0.02, "atol": 0.002} if dtype == torch.bfloat16 else {"rtol": 0.002, "atol": 0.0002}
+        assert_close(actual, expected.values(), **tolerances)
+        cotangent = torch.ones_like(actual)
+        expected_grads = torch.autograd.grad(expected.values(), references, cotangent)
+        assert_close(
+            torch.autograd.grad(actual, values, cotangent)[0],
+            NT(expected_grads, ragged_dims=source.ragged_dims).values(),
+            **tolerances,
+        )
+
+
+@pytest.mark.usefixtures("isolated_compiler")
 class TestNormalizeFunction:
 
     def test_normalize_batch_dim_raises(self, device, float_dtype):
@@ -2550,29 +2740,34 @@ class TestNormalizeFunction:
         reference = NT([F.normalize(t, dim=0) for t in input], **reference_options(input))
         assert_close(output, reference, atol=1e-6, rtol=1e-6)
 
-    def test_normalize_static_tail_values_and_vjp(self, device, float_dtype):
+    @pytest.mark.parametrize(
+        ("backend", "float_dtype"),
+        [pytest.param(None, dtype, id=str(dtype)) for dtype in FLOAT_DTYPES]
+        + [pytest.param("aot_eager", torch.float32, id="compiled")],
+        indirect=["float_dtype"],
+    )
+    def test_static_tail_derivatives(self, device, float_dtype, backend):
         template = NT(
-            [
-                torch.empty(2, 4, device=device, dtype=float_dtype),
-                torch.empty(5, 4, device=device, dtype=float_dtype),
-            ],
+            [torch.empty(2, 4, device=device, dtype=float_dtype), torch.empty(5, 4, device=device, dtype=float_dtype)],
             ragged_dims=(0,),
         )
         values = torch.randn_like(template.values(), requires_grad=True)
-        input = template.packed_like(values)
-        reference = F.normalize(values, p=1.5, dim=-1, eps=0.25)
-        output = F.normalize(input, p=1.5, dim=-1, eps=0.25)
 
-        cotangent = torch.randn_like(reference)
-        output_gradient = torch.autograd.grad(output.values(), values, cotangent)[0]
-        reference_gradient = torch.autograd.grad(reference, values, cotangent)[0]
-        assert output.shape == input.shape
-        assert output.ragged_dims == input.ragged_dims
-        assert output.values().shape == values.shape
-        assert_close(output.values(), reference, atol=1e-6, rtol=1e-6)
-        assert_close(output_gradient, reference_gradient, atol=1e-6, rtol=1e-6)
+        def normalize(template, values):
+            return F.normalize(template.packed_like(values), p=1.5, dim=-1, eps=0.25)
 
-    def test_normalize_static_tail_nonleading_ragged_layout_with_vjp(self, device, float_dtype):
+        run = normalize if backend is None else torch.compile(normalize, backend=backend, fullgraph=True, dynamic=True)
+        output = run(template, values)
+        expected = F.normalize(values, p=1.5, dim=-1, eps=0.25)
+        cotangent = torch.randn_like(expected)
+        actual_gradient = torch.autograd.grad(output.values(), values, cotangent)[0]
+        expected_gradient = torch.autograd.grad(expected, values, cotangent)[0]
+        assert output.shape == template.shape
+        assert output.ragged_dims == template.ragged_dims
+        assert_close(output.values(), expected, atol=1e-6, rtol=1e-6)
+        assert_close(actual_gradient, expected_gradient, atol=1e-6, rtol=1e-6)
+
+    def test_nonleading_static_derivatives(self, device, float_dtype):
         template = NT(
             [
                 torch.empty(2, 3, 4, device=device, dtype=float_dtype),
@@ -2594,29 +2789,53 @@ class TestNormalizeFunction:
         assert_close(output.values(), reference)
         assert_close(output_gradient, reference_gradient)
 
-    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    def test_normalize_static_tail_compiles_with_vjp(self, device):
-        compiled = torch.compile(
-            lambda template, values: F.normalize(
-                template.packed_like(values),
-                p=1.5,
-                dim=-1,
-                eps=0.25,
-            ).values(),
-            backend="aot_eager",
+    @pytest.mark.parametrize("p", (0.0, 1.5, 2.0, -1.0, float("inf"), float("-inf")))
+    @pytest.mark.parametrize("backend", ("aot_eager", "inductor"))
+    def test_compiled_ragged_derivatives(self, device, backend, p):
+        torch.compiler.reset()
+        rows = (2, 4) if p < 0 or math.isinf(p) else (0, 2, 4)
+        parts = [torch.randn(size, 3, device=device, dtype=torch.float64, requires_grad=True) for size in rows]
+        with torch.no_grad():
+            parts[-1][0] = 0
+        source = NT(parts, ragged_dims=(0,))
+        packed = source.values().detach().requires_grad_()
+        references = [part.detach().clone().requires_grad_() for part in parts]
+        expected = torch.cat([F.normalize(part, p=p, dim=0) for part in references])
+        run = torch.compile(
+            lambda template, values: F.normalize(template.packed_like(values), p=p, dim=1).values(),
+            backend=backend,
             fullgraph=True,
             dynamic=True,
         )
+        actual = run(source, packed)
+        assert_close(actual, expected)
+        cotangent = torch.randn_like(actual)
+        expected_grads = torch.autograd.grad(expected, references, cotangent)
+        assert_close(torch.autograd.grad(actual, packed, cotangent)[0], torch.cat(expected_grads))
 
-        template = NT([torch.empty(2, 4), torch.empty(3, 4)], ragged_dims=(0,))
-        values = torch.randn_like(template.values(), device=device, requires_grad=True)
-        reference = F.normalize(values, p=1.5, dim=-1, eps=0.25)
-        output = compiled(template, values)
-        cotangent = torch.randn_like(reference)
-        output_gradient = torch.autograd.grad(output, values, cotangent)[0]
-        reference_gradient = torch.autograd.grad(reference, values, cotangent)[0]
-        assert_close(output, reference)
-        assert_close(output_gradient, reference_gradient)
+    @pytest.mark.parametrize("p", (0.5, 1.5, 2.0, -1.0))
+    @pytest.mark.parametrize("dtype", (torch.float64, torch.complex128))
+    def test_zero_coordinate_hessian(self, device, p, dtype):
+        parts = [
+            torch.tensor([0.0, 2.0, 3.0], device=device, dtype=dtype),
+            torch.tensor([4.0, 5.0], device=device, dtype=dtype),
+            torch.zeros(3, device=device, dtype=dtype),
+        ]
+        source = NT(parts, ragged_dims=(0,))
+        packed = source.values().detach().requires_grad_()
+        reference = packed.detach().clone().requires_grad_()
+        cotangent = torch.tensor([1.0, -2.0, 0.5, 3.0, -0.25, 0.25, -1.0, 2.0], device=device, dtype=dtype)
+        direction = torch.tensor([2.0, 1.0, -1.0, 0.5, -3.0, 1.0, 0.5, -0.5], device=device, dtype=dtype)
+        actual = F.normalize(source.packed_like(packed), p=p, dim=1).values()
+        expected = torch.cat([F.normalize(part, p=p, dim=0) for part in reference.split((3, 2, 3))])
+        actual_grad = torch.autograd.grad(actual, packed, cotangent, create_graph=True)[0]
+        expected_grad = torch.autograd.grad(expected, reference, cotangent, create_graph=True)[0]
+        assert_close(actual_grad, expected_grad)
+        assert_close(
+            torch.autograd.grad(actual_grad, packed, direction)[0],
+            torch.autograd.grad(expected_grad, reference, direction)[0],
+            equal_nan=True,
+        )
 
 
 class TestOneHot:
@@ -2654,6 +2873,24 @@ class TestOneHot:
         output = F.one_hot(x, num_classes=3)
         reference = NT([F.one_hot(t, num_classes=3) for t in x], **reference_options(x))
         assert_close(output, reference)
+
+    @pytest.mark.parametrize("classes", (-1, 5))
+    @pytest.mark.parametrize("backend", (None, "aot_eager", "inductor"))
+    def test_compiled_inferred_classes(self, device, backend, classes):
+        torch.compiler.reset()
+        source = NT([torch.tensor([0, 2], device=device), torch.tensor([4, 1, 3], device=device)], ragged_dims=(0,))
+
+        def run(value):
+            return F.one_hot(value, num_classes=classes)
+
+        if backend is not None:
+            run = torch.compile(run, backend=backend, fullgraph=True)
+        actual = run(source)
+        expected = NT([F.one_hot(part, num_classes=5) for part in source], ragged_dims=(0,))
+        assert_close(actual, expected)
+        if classes == -1:
+            changed = source.packed_like(source.values().remainder(2))
+            assert_close(run(changed), NT([F.one_hot(part, num_classes=2) for part in changed], ragged_dims=(0,)))
 
 
 class TestPad:
@@ -2726,6 +2963,32 @@ class TestPdist:
             return
         output = F.pdist(x)
         assert_close(output, reference, atol=1e-6, rtol=1e-6)
+
+    @pytest.mark.parametrize("p", (1.5, 2.0))
+    @pytest.mark.parametrize("backend", (None, "aot_eager", "inductor"))
+    def test_compiled_derivatives(self, device, backend, p):
+        torch.compiler.reset()
+        parts = [
+            torch.randn(rows, columns, device=device, dtype=torch.float64, requires_grad=True)
+            for rows, columns in ((0, 3), (1, 2), (4, 2), (3, 3))
+        ]
+        template = NT(parts, ragged_dims=(0, 1))
+        values = template.values().detach().requires_grad_()
+        reference_parts = [part.detach().clone().requires_grad_() for part in parts]
+
+        def run(source, packed):
+            return F.pdist(source.packed_like(packed), p=p).values()
+
+        if backend is not None:
+            run = torch.compile(run, backend=backend, fullgraph=True, dynamic=True)
+        actual = run(template, values)
+        expected = torch.cat(
+            [F.pdist(part, p=p) if part.shape[0] > 1 else part.sum().expand(0) for part in reference_parts]
+        )
+        assert_close(actual, expected)
+        cotangent = torch.randn_like(actual)
+        expected_grads = torch.autograd.grad(expected, reference_parts, cotangent)
+        assert_close(torch.autograd.grad(actual, values, cotangent)[0], NT(expected_grads, ragged_dims=(0, 1)).values())
 
 
 class TestPixelShuffle:
@@ -2905,6 +3168,43 @@ class TestRegressionLosses:
             reduction="sum",
         )
         assert_close(output, reference)
+
+    def test_broadcast_topology(self):
+        parts = [torch.tensor([[1.0], [2.0]], requires_grad=True), torch.tensor([[3.0]], requires_grad=True)]
+        targets = [torch.tensor([[1.0]]), torch.tensor([[2.0], [3.0]])]
+        output = F.mse_loss(NT(parts), NT(targets), reduction="none")
+        assert [tuple(t.shape) for t in output] == [(2, 1), (2, 1)]
+        expected = [torch.tensor([[0.0], [1.0]]), torch.tensor([[1.0], [0.0]])]
+        for actual, reference in zip(output, expected):
+            torch.testing.assert_close(actual, reference)
+        grads = torch.autograd.grad(output.values().mean(), parts)
+        torch.testing.assert_close(grads[0], torch.tensor([[0.0], [0.5]]))
+        torch.testing.assert_close(grads[1], torch.tensor([[0.5]]))
+
+    def test_variance_sample_positions(self):
+        parts = [torch.tensor([[0.2], [0.4]]), torch.tensor([[0.8]])]
+        target = NT([torch.zeros_like(part) for part in parts])
+        actual = F.gaussian_nll_loss(
+            NT(parts), target, var=NT([torch.ones_like(part) for part in parts]), reduction="sum"
+        )
+        torch.testing.assert_close(actual, sum(0.5 * part.square().sum() for part in parts))
+        with pytest.raises(RuntimeError, match="variance sample shapes"):
+            F.gaussian_nll_loss(NT(parts), target, var=NT(torch.ones(1, 1), torch.ones(2, 1)))
+        per_position = NT(torch.ones(2), torch.ones(1))
+        torch.testing.assert_close(F.gaussian_nll_loss(NT(parts), target, var=per_position, reduction="sum"), actual)
+
+    def test_compiled_variance_gradients(self):
+        parts = [torch.randn(2, 3, requires_grad=True), torch.randn(4, 3, requires_grad=True)]
+        target = NT([torch.randn_like(part) for part in parts])
+        variance = torch.ones(6, 3, requires_grad=True)
+        compiled = torch.compile(F.gaussian_nll_loss, backend="aot_eager", fullgraph=True)
+        actual = compiled(NT(parts), target, variance, reduction="sum", full=True)
+        expected = F.gaussian_nll_loss(torch.cat(parts), target.values(), variance, reduction="sum", full=True)
+        torch.testing.assert_close(actual, expected)
+        actual_grads = torch.autograd.grad(actual, (*parts, variance))
+        expected_grads = torch.autograd.grad(expected, (*parts, variance))
+        for result, reference in zip(actual_grads, expected_grads):
+            torch.testing.assert_close(result, reference)
 
 
 @pytest.mark.skipif(not hasattr(F, "scaled_dot_product_attention"), reason="scaled_dot_product_attention not available")
@@ -3179,7 +3479,7 @@ class TestScaledDotProductAttention:
         assert_close(output, reference, atol=1e-4, rtol=1e-4)
 
     @pytest.mark.skipif(flex_attention is None, reason="FlexAttention not available")
-    def test_flex_attention_wrapper_supports_danling_block_mask(self, device):
+    def test_flex_block_mask(self, device):
         if device.type != "cuda":
             pytest.skip("DanLing FlexAttention wrapper is currently CUDA-focused")
 
@@ -3217,7 +3517,7 @@ class TestScaledDotProductAttention:
         )
         assert_close(output, reference, atol=1e-4, rtol=1e-4)
 
-    def test_sdpa_batch_first_false_matches_reference(self):
+    def test_nonleading_batch(self):
         device = torch.device("cpu")
         dtype = torch.float32
         query_elems = [
@@ -3243,7 +3543,7 @@ class TestScaledDotProductAttention:
         )
         assert_close(output, reference, atol=1e-5, rtol=1e-5)
 
-    def test_sdpa_batch_first_false_with_nested_mask_matches_reference(self):
+    def test_nonleading_nested_mask(self):
         device = torch.device("cpu")
         dtype = torch.float32
         query_elems = [
@@ -3377,7 +3677,7 @@ class TestScaledDotProductAttention:
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="Native FlashAttention requires CUDA")
     @pytest.mark.parametrize("batch_first", [True, False])
     @pytest.mark.parametrize("kind", ["bidirectional", "causal", "cross"])
-    def test_sdpa_inductor_dynamic_training_preserves_structure_and_gradients(self, batch_first, kind):
+    def test_inductor_dynamic_training(self, batch_first, kind):
         if not torch.cuda.is_bf16_supported() or torch.cuda.get_device_capability()[0] < 8:
             pytest.skip("Native BF16 FlashAttention requires an Ampere-or-newer GPU")
         from itertools import accumulate
@@ -3542,7 +3842,7 @@ class TestScaledDotProductAttention:
         assert_close(output, reference, atol=1e-4, rtol=1e-4)
 
     @pytest.mark.skipif(flex_attention is None, reason="FlexAttention not available")
-    def test_flex_eager_non_additive_score_mod(self, device):
+    def test_flex_nonlinear_score(self, device):
         # score_mod is an arbitrary transform, not necessarily an additive bias.
         query = NT([torch.randn(4, 3, 16, device=device), torch.randn(4, 7, 16, device=device)])
         key = NT([torch.randn(4, 3, 16, device=device), torch.randn(4, 7, 16, device=device)])
@@ -3556,7 +3856,7 @@ class TestScaledDotProductAttention:
         assert_close(output, reference, atol=1e-4, rtol=1e-4)
 
     @pytest.mark.skipif(flex_attention is None, reason="FlexAttention not available")
-    def test_flex_eager_broadcast_valued_score_mod(self, device):
+    def test_flex_broadcast_score(self, device):
         # score_mod may return a broadcastable result rather than a fully expanded (heads, q, kv).
         query = NT([torch.randn(4, 5, 16, device=device), torch.randn(4, 2, 16, device=device)])
         key = NT([torch.randn(4, 5, 16, device=device), torch.randn(4, 2, 16, device=device)])
@@ -3582,6 +3882,38 @@ class TestScaledDotProductAttention:
         assert output.batch_first is False
         reference = self._ragged_attention_reference(query, key, value, score_mod)
         assert_close(output, reference, atol=1e-4, rtol=1e-4)
+
+    def test_key_value_lengths(self):
+        query = NT(torch.randn(1, 2, 4), torch.randn(1, 3, 4))
+        value = NT(torch.randn(1, 3, 4), torch.randn(1, 2, 4))
+        with pytest.raises(RuntimeError, match="sequence lengths"):
+            F.scaled_dot_product_attention(query, query, value)
+
+    @pytest.mark.parametrize(("query_width", "value_width"), [(4, 3), (4, 7), (16, 32)])
+    def test_value_width(self, device, query_width, value_width):
+        if device.type != "cuda":
+            pytest.skip("native varlen attention requires CUDA")
+        queries = [
+            torch.randn(2, length, query_width, device=device, dtype=torch.bfloat16, requires_grad=True)
+            for length in (2, 4)
+        ]
+        keys = [torch.randn_like(query, requires_grad=True) for query in queries]
+        values = [
+            torch.randn(2, length, value_width, device=device, dtype=torch.bfloat16, requires_grad=True)
+            for length in (2, 4)
+        ]
+        actual = F.scaled_dot_product_attention(NT(queries), NT(keys), NT(values))
+        with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
+            expected = [F.scaled_dot_product_attention(q, k, v) for q, k, v in zip(queries, keys, values)]
+        for result, reference in zip(actual, expected):
+            assert result.shape == reference.shape
+            torch.testing.assert_close(result, reference, atol=0.02, rtol=0.02)
+
+        leaves = (*queries, *keys, *values)
+        actual_grads = torch.autograd.grad(actual.values().square().sum(), leaves)
+        expected_grads = torch.autograd.grad(sum(part.square().sum() for part in expected), leaves)
+        for result, reference in zip(actual_grads, expected_grads):
+            torch.testing.assert_close(result, reference, atol=0.04, rtol=0.04)
 
 
 class TestSequenceLosses:
@@ -3660,6 +3992,101 @@ class TestSoftmaxFamily:
         nt = nested_rand([(2, 4), (3, 4)], device, float_dtype)
         assert_nested_function_matches(F.softmin, nt, dim=-1)
 
+    @pytest.mark.parametrize("hard", (False, True))
+    @pytest.mark.parametrize("dim", (1, -1))
+    def test_compiled_noise_derivatives(self, device, dim, hard):
+        torch.compiler.reset()
+        template = NT(
+            [
+                torch.randn(2, 3, device=device, dtype=torch.float64),
+                torch.randn(4, 3, device=device, dtype=torch.float64),
+            ],
+            ragged_dims=(0,),
+        )
+        values = template.values().detach().requires_grad_()
+        reference_values = values.detach().clone().requires_grad_()
+        torch.manual_seed(918)
+        noise = -torch.empty_like(reference_values).exponential_().log()
+        parts = list((reference_values + noise).split((2, 4)))
+        references = [F.softmax(part / 0.7, dim=dim - 1 if dim > 0 else dim) for part in parts]
+        if hard:
+            references = [
+                torch.zeros_like(part).scatter_(
+                    dim - 1 if dim > 0 else dim, part.argmax(dim - 1 if dim > 0 else dim, keepdim=True), 1
+                )
+                - part.detach()
+                + part
+                for part in references
+            ]
+        expected = torch.cat(references)
+        run = torch.compile(
+            lambda source, packed: F.gumbel_softmax(source.packed_like(packed), tau=0.7, hard=hard, dim=dim).values(),
+            backend="aot_eager",
+            fullgraph=True,
+            dynamic=True,
+        )
+        torch.manual_seed(918)
+        actual = run(template, values)
+        assert_close(actual, expected)
+        cotangent = torch.randn_like(actual)
+        assert_close(
+            torch.autograd.grad(actual, values, cotangent)[0],
+            torch.autograd.grad(expected, reference_values, cotangent)[0],
+        )
+
+    def test_compiled_ragged_groups(self, device):
+        torch.compiler.reset()
+        source = NT(
+            [
+                torch.randn(2, 3, 4, device=device, dtype=torch.float64),
+                torch.randn(4, 2, 4, device=device, dtype=torch.float64),
+            ],
+            ragged_dims=(0, 1),
+        )
+        packed = source.values().detach().requires_grad_()
+        run = torch.compile(
+            lambda template, values: F.gumbel_softmax(template.packed_like(values), hard=True, dim=2),
+            backend="inductor",
+            fullgraph=True,
+            dynamic=True,
+        )
+        output = run(source, packed)
+        for part in output:
+            assert_close(part.sum(1), torch.ones_like(part.sum(1)))
+            assert torch.all((part == 0) | (part == 1))
+        gradient = torch.autograd.grad(output.values(), packed, torch.randn_like(output.values()))[0]
+        assert torch.isfinite(gradient).all()
+        assert gradient.count_nonzero() > 0
+
+    def test_compiled_softmin_derivatives(self, device):
+        torch.compiler.reset()
+        source = NT([torch.randn(rows, 3, device=device, dtype=torch.float64) for rows in (2, 4)], ragged_dims=(0,))
+        values = source.values().detach().requires_grad_()
+        reference_values = values.detach().clone().requires_grad_()
+        expected = torch.cat([F.softmin(part, dim=0) for part in reference_values.split((2, 4))])
+        run = torch.compile(
+            lambda template, packed: F.softmin(template.packed_like(packed), dim=1).values(),
+            backend="inductor",
+            fullgraph=True,
+            dynamic=True,
+        )
+        actual = run(source, values)
+        assert_close(actual, expected)
+        cotangent = torch.randn_like(actual)
+        assert_close(
+            torch.autograd.grad(actual, values, cotangent)[0],
+            torch.autograd.grad(expected, reference_values, cotangent)[0],
+        )
+
+    def test_empty_hard_axis(self, device):
+        parts = [torch.empty(0, 3, device=device), torch.randn(2, 3, device=device)]
+        source = NT(parts, ragged_dims=(0,))
+        assert F.gumbel_softmax(source, hard=False, dim=1)[0].shape == parts[0].shape
+        with pytest.raises(IndexError, match="non-zero size"):
+            F.gumbel_softmax(parts[0], hard=True, dim=0)
+        with pytest.raises(IndexError, match="non-zero size"):
+            F.gumbel_softmax(source, hard=True, dim=1)
+
 
 class TestUnfoldFold:
 
@@ -3731,7 +4158,7 @@ class TestCrossEntropy:
         reference = F.cross_entropy(logits.values(), targets.values(), reduction=reduction)
         torch.testing.assert_close(output, reference)
 
-    def test_weight_and_ignore_index_match_dense(self, device, float_dtype):
+    def test_weight_ignore_index(self, device, float_dtype):
         logits, targets = self._logits_and_targets(device, float_dtype)
         weight = torch.rand(5, device=device, dtype=float_dtype)
         ignore_index = int(targets[0][0])
@@ -3742,7 +4169,7 @@ class TestCrossEntropy:
             F.cross_entropy(logits.values(), targets.values(), **kwargs),
         )
 
-    def test_reduction_none_keeps_multi_ragged_structure(self, device, float_dtype):
+    def test_unreduced_multi_ragged(self, device, float_dtype):
         # The generic path concatenates into one (rows, C) matrix, which flattens this away.
         logits = NestedTensor(
             [
@@ -3792,7 +4219,7 @@ class TestCrossEntropy:
             F.cross_entropy(logits.values(), sentinel.values(), ignore_index=999),
         )
 
-    def test_rejects_out_of_range_label_that_is_not_ignored(self, device, float_dtype, request):
+    def test_label_range_errors(self, device, float_dtype, request):
         if device.type == "cuda" and os.environ.get("DANLING_TEST_CUDA_ASSERT_CHILD") != "1":
             # A device assertion poisons the CUDA context even when caught. Execute
             # this same parametrized case in a fresh process, synchronizing below.
@@ -3960,7 +4387,7 @@ class TestCrossEntropy:
                     rtol=1e-5,
                 )
 
-    def test_all_ignored_returns_nan_and_zero_gradient(self, device, float_dtype):
+    def test_all_ignored_gradients(self, device, float_dtype):
         elements = [torch.randn(n, 5, device=device, dtype=float_dtype, requires_grad=True) for n in (2, 4)]
         logits = NestedTensor(elements).movedim(-1, 1)
         targets = NestedTensor([torch.full((n,), 999, device=device) for n in (2, 4)])
@@ -3969,7 +4396,7 @@ class TestCrossEntropy:
         for gradient in torch.autograd.grad(loss, elements):
             torch.testing.assert_close(gradient, torch.zeros_like(gradient))
 
-    def test_class_last_is_not_silently_detected(self, device, float_dtype):
+    def test_explicit_class_axis(self, device, float_dtype):
         logits = NestedTensor(
             [torch.randn(2, 5, device=device, dtype=float_dtype), torch.randn(3, 5, device=device, dtype=float_dtype)]
         )
@@ -3981,7 +4408,7 @@ class TestCrossEntropy:
 
     @pytest.mark.parametrize("probabilities", [False, True])
     @pytest.mark.parametrize("reduction", ["none", "mean", "sum"])
-    def test_dense_input_reads_only_native_target_positions(self, device, float_dtype, probabilities, reduction):
+    def test_dense_target_positions(self, device, float_dtype, probabilities, reduction):
 
         lengths, classes = (0, 2, 5), 5
         values = torch.randn(3, classes, 5, device=device, dtype=float_dtype, requires_grad=True)
@@ -4040,7 +4467,7 @@ class TestCrossEntropy:
 
     @pytest.mark.parametrize("classes", [3, 5])
     @pytest.mark.parametrize("native_input", [False, True])
-    def test_mixed_probability_targets_preserve_static_axis_order(self, device, classes, native_input):
+    def test_probability_target_axes(self, device, classes, native_input):
 
         # Classes and the static position axis coincide in one case: a wrong permutation
         # then has a valid shape and must still be detected by values and both VJPs.
@@ -4086,7 +4513,7 @@ class TestCrossEntropy:
             torch.testing.assert_close(actual, expected_gradient)
 
     @pytest.mark.parametrize("probabilities", [False, True])
-    def test_one_dimensional_input_uses_class_axis_zero(self, device, float_dtype, probabilities):
+    def test_vector_class_axis(self, device, float_dtype, probabilities):
         values = torch.randn(5, device=device, dtype=float_dtype, requires_grad=True)
         logits = NestedTensor(list(values.unbind()), ragged_dims=())
         target = torch.randn_like(values).softmax(0) if probabilities else torch.tensor(2, device=device)
@@ -4107,7 +4534,7 @@ class TestCrossEntropy:
             )
         torch.testing.assert_close(output.values() if isinstance(output, NestedTensor) else output, expected)
 
-    def test_target_type_and_probability_ignore_errors_are_preserved(self, device, float_dtype):
+    def test_target_type_errors(self, device, float_dtype):
         logits, targets = self._logits_and_targets(device, float_dtype)
         with pytest.raises(RuntimeError, match="Long"):
             F.cross_entropy(logits, targets.short())
@@ -4116,7 +4543,7 @@ class TestCrossEntropy:
             F.cross_entropy(logits, probabilities, ignore_index=1)
 
     @pytest.mark.parametrize("reduction", ["none", "mean", "sum"])
-    def test_zero_classes_and_ignored_positions_follow_dense(self, device, float_dtype, reduction):
+    def test_empty_classes_ignore_index(self, device, float_dtype, reduction):
 
         values = torch.empty(3, 0, device=device, dtype=float_dtype, requires_grad=True)
         logits = NestedTensor(list(values.unbind()), ragged_dims=())
@@ -4136,7 +4563,7 @@ class TestCrossEntropy:
     @pytest.mark.parametrize("probabilities", [False, True])
     @pytest.mark.parametrize("smoothing", [0.0, 0.1])
     @pytest.mark.parametrize("reduction", ["none", "mean", "sum"])
-    def test_native_class_weights_value_and_input_vjp(
+    def test_native_weight_derivatives(
         self, device, float_dtype, native, unbatched, probabilities, smoothing, reduction
     ):
 
@@ -4160,7 +4587,7 @@ class TestCrossEntropy:
 
     @pytest.mark.parametrize("native", [False, True])
     @pytest.mark.parametrize("probabilities", [False, True])
-    def test_native_class_weight_grad_follows_torch(self, device, float_dtype, native, probabilities):
+    def test_native_weight_gradient(self, device, float_dtype, native, probabilities):
         values = torch.randn(2, 3, device=device, dtype=float_dtype, requires_grad=True)
         target_values = values.detach().softmax(-1) if probabilities else torch.tensor([0, 2], device=device)
         weights = torch.tensor([0.4, 0.7, 1.2], device=device, dtype=float_dtype, requires_grad=True)
@@ -4182,7 +4609,7 @@ class TestCrossEntropy:
             torch.testing.assert_close(actual, expected)
 
     @pytest.mark.parametrize("probabilities", [False, True])
-    def test_native_class_weight_dtype_is_not_cast(self, device, float_dtype, probabilities):
+    def test_native_weight_dtype(self, device, float_dtype, probabilities):
         values = torch.randn(2, 3, device=device, dtype=float_dtype)
         target = values.softmax(-1) if probabilities else torch.tensor([0, 2], device=device)
         weight_dtype = torch.float32 if float_dtype == torch.float64 else torch.float64
@@ -4199,501 +4626,9 @@ class TestCrossEntropy:
             with pytest.raises(RuntimeError, match="scalar type|same dtype|expected.*type"):
                 F.cross_entropy(values, target, weight=native_weights)
 
-    def test_native_class_weights_require_logical_vector(self, device, float_dtype):
+    def test_native_weight_shape(self, device, float_dtype):
         values = torch.randn(2, 3, device=device, dtype=float_dtype)
         target = torch.tensor([0, 2], device=device)
         weights = NestedTensor([torch.ones(3, device=device, dtype=float_dtype)] * 2, ragged_dims=())
         with pytest.raises(ValueError, match="class weights must be one-dimensional"):
             F.cross_entropy(values, target, weight=weights)
-
-
-def test_loss_broadcasts_sample_boundaries_and_retains_unreduced_topology():
-    parts = [torch.tensor([[1.0], [2.0]], requires_grad=True), torch.tensor([[3.0]], requires_grad=True)]
-    targets = [torch.tensor([[1.0]]), torch.tensor([[2.0], [3.0]])]
-    output = F.mse_loss(NT(parts), NT(targets), reduction="none")
-    assert [tuple(t.shape) for t in output] == [(2, 1), (2, 1)]
-    expected = [torch.tensor([[0.0], [1.0]]), torch.tensor([[1.0], [0.0]])]
-    for actual, reference in zip(output, expected):
-        torch.testing.assert_close(actual, reference)
-    grads = torch.autograd.grad(output.values().mean(), parts)
-    torch.testing.assert_close(grads[0], torch.tensor([[0.0], [0.5]]))
-    torch.testing.assert_close(grads[1], torch.tensor([[0.5]]))
-
-
-def test_kl_batchmean_uses_logical_batch_size():
-    parts = [torch.log(torch.tensor([[0.2, 0.8], [0.4, 0.6]])), torch.log(torch.tensor([[0.6, 0.4]]))]
-    parts = [part.requires_grad_() for part in parts]
-    targets = [torch.full_like(part, 0.5) for part in parts]
-    actual = F.kl_div(NT(parts), NT(targets), reduction="batchmean")
-    expected = sum(F.kl_div(part, target, reduction="sum") for part, target in zip(parts, targets)) / 2
-    torch.testing.assert_close(actual, expected)
-    for gradient in torch.autograd.grad(actual, parts):
-        torch.testing.assert_close(gradient, torch.full_like(gradient, -0.25))
-
-
-def test_loss_auxiliary_tensors_follow_native_sample_positions():
-    parts = [torch.tensor([[0.2], [0.4]]), torch.tensor([[0.8]])]
-    target = NT([torch.zeros_like(part) for part in parts])
-    variance = NT([torch.ones_like(part) for part in parts])
-    actual = F.gaussian_nll_loss(NT(parts), target, var=variance, reduction="sum")
-    torch.testing.assert_close(actual, sum(0.5 * part.square().sum() for part in parts))
-    mismatched_variance = NT(torch.ones(1, 1), torch.ones(2, 1))
-    with pytest.raises(RuntimeError, match="variance sample shapes"):
-        F.gaussian_nll_loss(NT(parts), target, var=mismatched_variance)
-    per_position_variance = NT(torch.ones(2), torch.ones(1))
-    torch.testing.assert_close(
-        F.gaussian_nll_loss(NT(parts), target, var=per_position_variance, reduction="sum"), actual
-    )
-    weights = torch.tensor([[[1.0], [2.0]], [[3.0], [100.0]]])
-    actual = F.binary_cross_entropy(NT(parts), target, weight=weights, reduction="sum")
-    expected = sum(
-        F.binary_cross_entropy(part, torch.zeros_like(part), weight=weights[i, : len(part)], reduction="sum")
-        for i, part in enumerate(parts)
-    )
-    torch.testing.assert_close(actual, expected)
-
-
-def test_instance_norm_updates_running_statistics_once_per_batch():
-    parts = [torch.arange(8.0).reshape(2, 4), torch.arange(8.0, 16.0).reshape(2, 4)]
-    running_mean, running_var = torch.zeros(2), torch.ones(2)
-    expected_mean, expected_var = running_mean.clone(), running_var.clone()
-    actual = F.instance_norm(NT(parts), running_mean, running_var, use_input_stats=True)
-    expected = F.instance_norm(torch.stack(parts), expected_mean, expected_var, use_input_stats=True)
-    for result, reference in zip(actual, expected):
-        torch.testing.assert_close(result, reference)
-    torch.testing.assert_close(running_mean, expected_mean)
-    torch.testing.assert_close(running_var, expected_var)
-
-
-def test_prelu_preserves_rank_and_logical_channels():
-    parts = [torch.randn(2, 3, 4), torch.randn(2, 3, 5)]
-    weight = torch.tensor([0.1, 0.5], requires_grad=True)
-    output = F.prelu(NT(parts), weight)
-    for actual, source in zip(output, parts):
-        assert actual.shape == source.shape
-        torch.testing.assert_close(actual, F.prelu(source.unsqueeze(0), weight).squeeze(0))
-
-
-@pytest.mark.parametrize("mask_dtype", [torch.bool, torch.float64])
-def test_mha_user_mask_preserves_structural_padding(mask_dtype):
-    parts = [torch.randn(length, 4, dtype=torch.float64) for length in (2, 4)]
-    model = nn.MultiheadAttention(4, 2, batch_first=True, dtype=torch.float64).eval()
-    source = NT(parts, padding_value=13)
-    mask = torch.zeros(2, 4, dtype=mask_dtype)
-    actual, _ = model(source, source, source, key_padding_mask=mask, need_weights=True)
-    for i, (result, part) in enumerate(zip(actual, parts)):
-        expected, _ = model(part[None], part[None], part[None], key_padding_mask=mask[i : i + 1, : len(part)])
-        torch.testing.assert_close(result, expected[0])
-
-
-def test_sdpa_rejects_mismatched_key_value_sample_lengths():
-    query = NT(torch.randn(1, 2, 4), torch.randn(1, 3, 4))
-    value = NT(torch.randn(1, 3, 4), torch.randn(1, 2, 4))
-    with pytest.raises(RuntimeError, match="sequence lengths"):
-        F.scaled_dot_product_attention(query, query, value)
-
-
-@pytest.mark.parametrize(("query_width", "value_width"), [(4, 3), (4, 7), (16, 32)])
-def test_sdpa_preserves_value_feature_width(device, query_width, value_width):
-    if device.type != "cuda":
-        pytest.skip("native varlen attention requires CUDA")
-    queries = [
-        torch.randn(2, length, query_width, device=device, dtype=torch.bfloat16, requires_grad=True)
-        for length in (2, 4)
-    ]
-    keys = [torch.randn_like(query, requires_grad=True) for query in queries]
-    values = [
-        torch.randn(2, length, value_width, device=device, dtype=torch.bfloat16, requires_grad=True)
-        for length in (2, 4)
-    ]
-    actual = F.scaled_dot_product_attention(NT(queries), NT(keys), NT(values))
-    with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
-        expected = [F.scaled_dot_product_attention(q, k, v) for q, k, v in zip(queries, keys, values)]
-    for result, reference in zip(actual, expected):
-        assert result.shape == reference.shape
-        torch.testing.assert_close(result, reference, atol=0.02, rtol=0.02)
-
-    leaves = (*queries, *keys, *values)
-    actual_grads = torch.autograd.grad(actual.values().square().sum(), leaves)
-    expected_grads = torch.autograd.grad(sum(part.square().sum() for part in expected), leaves)
-    for result, reference in zip(actual_grads, expected_grads):
-        torch.testing.assert_close(result, reference, atol=0.04, rtol=0.04)
-
-
-def test_embedding_bag_supports_2d_sample_bags():
-    parts = [torch.tensor([[0, 1], [2, 3]]), torch.tensor([[1, 2]])]
-    weight = torch.arange(12.0).reshape(4, 3)
-    actual = F.embedding_bag(NT(parts), weight)
-    for result, part in zip(actual, parts):
-        torch.testing.assert_close(result, F.embedding_bag(part, weight))
-
-
-def test_embedding_bag_explicit_offsets_fullgraph():
-    source = NT(torch.tensor([0, 1, 2]), torch.tensor([1, 2, 3, 0]))
-    weight = torch.arange(12.0).reshape(4, 3)
-    offsets = torch.tensor([0, 2])
-    compiled = torch.compile(F.embedding_bag, backend="aot_eager", fullgraph=True)
-    actual = compiled(source, weight, offsets=offsets, mode="sum")
-    for result, part in zip(actual, source):
-        torch.testing.assert_close(result, F.embedding_bag(part, weight, offsets=offsets, mode="sum"))
-
-
-def test_inplace_relu_updates_the_original_nested_tensor():
-    source = NT(torch.tensor([-1.0, 2.0]), torch.tensor([-3.0, 4.0, -5.0]))
-    source.tensor  # Materialize a view before the mutation.
-    result = F.relu(source, inplace=True)
-    assert result is source
-    torch.testing.assert_close(source[0], torch.tensor([0.0, 2.0]))
-    torch.testing.assert_close(source[1], torch.tensor([0.0, 4.0, 0.0]))
-    torch.testing.assert_close(source.tensor[1], torch.tensor([0.0, 4.0, 0.0]))
-
-
-def test_spatial_convenience_functions_restore_natural_batch_dimensions():
-    parts = [torch.randn(2, 3, 4), torch.randn(2, 4, 5)]
-    grids = [torch.zeros(2, 2, 2), torch.zeros(3, 3, 2)]
-    actual = F.grid_sample(NT(parts), NT(grids), align_corners=False)
-    for result, source, grid in zip(actual, parts, grids):
-        torch.testing.assert_close(result, F.grid_sample(source[None], grid[None], align_corners=False)[0])
-    theta = [torch.eye(2, 3), torch.eye(2, 3)]
-    actual = F.affine_grid(NT(theta), (2, 1, 3, 4), align_corners=False)
-    expected = F.affine_grid(torch.stack(theta), (2, 1, 3, 4), align_corners=False)
-    for result, reference in zip(actual, expected):
-        torch.testing.assert_close(result, reference)
-
-
-def test_gaussian_nll_fullgraph_preserves_variance_gradients():
-    parts = [torch.randn(2, 3, requires_grad=True), torch.randn(4, 3, requires_grad=True)]
-    target = NT([torch.randn_like(part) for part in parts])
-    variance = torch.ones(6, 3, requires_grad=True)
-    compiled = torch.compile(F.gaussian_nll_loss, backend="aot_eager", fullgraph=True)
-    actual = compiled(NT(parts), target, variance, reduction="sum", full=True)
-    expected = F.gaussian_nll_loss(torch.cat(parts), target.values(), variance, reduction="sum", full=True)
-    torch.testing.assert_close(actual, expected)
-    actual_grads = torch.autograd.grad(actual, (*parts, variance))
-    expected_grads = torch.autograd.grad(expected, (*parts, variance))
-    for result, reference in zip(actual_grads, expected_grads):
-        torch.testing.assert_close(result, reference)
-
-
-@pytest.mark.parametrize("ragged_channels", (False, True))
-@pytest.mark.parametrize("backend", ("aot_eager", "inductor"))
-def test_local_response_norm_fullgraph_sample_boundaries(device, backend, ragged_channels):
-    torch.compiler.reset()
-    shapes = ((2, 3, 4), (4, 2, 5)) if ragged_channels else ((3, 2, 4), (3, 4, 2))
-    parts = [torch.randn(shape, device=device, dtype=torch.float64, requires_grad=True) for shape in shapes]
-    template = NT(parts, padding_value=float("nan"))
-    values = template.values().detach().requires_grad_()
-    reference_parts = [part.detach().clone().requires_grad_() for part in parts]
-    run = torch.compile(
-        lambda source, packed: F.local_response_norm(source.packed_like(packed), 4, alpha=0.2, beta=0.6).values(),
-        backend=backend,
-        fullgraph=True,
-        dynamic=True,
-    )
-    actual = run(template, values)
-    reference = NT(
-        [F.local_response_norm(part.unsqueeze(0), 4, alpha=0.2, beta=0.6).squeeze(0) for part in reference_parts],
-        ragged_dims=template.ragged_dims,
-    )
-    assert_close(actual, reference.values())
-    cotangent = torch.randn_like(actual)
-    actual_grad = torch.autograd.grad(actual, values, cotangent)[0]
-    reference_grads = torch.autograd.grad(reference.values(), reference_parts, cotangent)
-    assert_close(actual_grad, NT(reference_grads, ragged_dims=template.ragged_dims).values())
-
-
-@pytest.mark.parametrize("classes", (-1, 5))
-@pytest.mark.parametrize("backend", (None, "aot_eager", "inductor"))
-def test_one_hot_fullgraph_inferred_classes(device, backend, classes):
-    torch.compiler.reset()
-    source = NT([torch.tensor([0, 2], device=device), torch.tensor([4, 1, 3], device=device)], ragged_dims=(0,))
-
-    def run(value):
-        return F.one_hot(value, num_classes=classes)
-
-    if backend is not None:
-        run = torch.compile(run, backend=backend, fullgraph=True)
-    actual = run(source)
-    expected = NT([F.one_hot(part, num_classes=5) for part in source], ragged_dims=(0,))
-    assert_close(actual, expected)
-    if classes == -1:
-        changed = source.packed_like(source.values().remainder(2))
-        assert_close(run(changed), NT([F.one_hot(part, num_classes=2) for part in changed], ragged_dims=(0,)))
-
-
-@pytest.mark.parametrize("hard", (False, True))
-@pytest.mark.parametrize("dim", (1, -1))
-def test_gumbel_softmax_fullgraph_packed_noise_and_vjp(device, dim, hard):
-    torch.compiler.reset()
-    template = NT(
-        [torch.randn(2, 3, device=device, dtype=torch.float64), torch.randn(4, 3, device=device, dtype=torch.float64)],
-        ragged_dims=(0,),
-    )
-    values = template.values().detach().requires_grad_()
-    reference_values = values.detach().clone().requires_grad_()
-    torch.manual_seed(918)
-    noise = -torch.empty_like(reference_values).exponential_().log()
-    parts = list((reference_values + noise).split((2, 4)))
-    references = [F.softmax(part / 0.7, dim=dim - 1 if dim > 0 else dim) for part in parts]
-    if hard:
-        references = [
-            torch.zeros_like(part).scatter_(
-                dim - 1 if dim > 0 else dim, part.argmax(dim - 1 if dim > 0 else dim, keepdim=True), 1
-            )
-            - part.detach()
-            + part
-            for part in references
-        ]
-    expected = torch.cat(references)
-    run = torch.compile(
-        lambda source, packed: F.gumbel_softmax(source.packed_like(packed), tau=0.7, hard=hard, dim=dim).values(),
-        backend="aot_eager",
-        fullgraph=True,
-        dynamic=True,
-    )
-    torch.manual_seed(918)
-    actual = run(template, values)
-    assert_close(actual, expected)
-    cotangent = torch.randn_like(actual)
-    assert_close(
-        torch.autograd.grad(actual, values, cotangent)[0],
-        torch.autograd.grad(expected, reference_values, cotangent)[0],
-    )
-
-
-@pytest.mark.parametrize("p", (1.5, 2.0))
-@pytest.mark.parametrize("backend", (None, "aot_eager", "inductor"))
-def test_pdist_fullgraph_condensed_values_and_vjp(device, backend, p):
-    torch.compiler.reset()
-    parts = [
-        torch.randn(rows, columns, device=device, dtype=torch.float64, requires_grad=True)
-        for rows, columns in ((0, 3), (1, 2), (4, 2), (3, 3))
-    ]
-    template = NT(parts, ragged_dims=(0, 1))
-    values = template.values().detach().requires_grad_()
-    reference_parts = [part.detach().clone().requires_grad_() for part in parts]
-
-    def run(source, packed):
-        return F.pdist(source.packed_like(packed), p=p).values()
-
-    if backend is not None:
-        run = torch.compile(run, backend=backend, fullgraph=True, dynamic=True)
-    actual = run(template, values)
-    expected = torch.cat(
-        [F.pdist(part, p=p) if part.shape[0] > 1 else part.sum().expand(0) for part in reference_parts]
-    )
-    assert_close(actual, expected)
-    cotangent = torch.randn_like(actual)
-    expected_grads = torch.autograd.grad(expected, reference_parts, cotangent)
-    assert_close(torch.autograd.grad(actual, values, cotangent)[0], NT(expected_grads, ragged_dims=(0, 1)).values())
-
-
-@pytest.mark.parametrize("spatial_rank", (2, 3))
-@pytest.mark.parametrize("ratio", (False, True))
-@pytest.mark.parametrize("backend", (None, "aot_eager", "inductor"))
-def test_fractional_max_pool_fullgraph_indices_randomness_and_vjp(device, backend, spatial_rank, ratio):
-    torch.compiler.reset()
-    pool = F.fractional_max_pool2d if spatial_rank == 2 else F.fractional_max_pool3d
-    spatial_shapes = ((5, 6), (7, 4)) if spatial_rank == 2 else ((4, 5, 6), (6, 7, 4))
-    parts = [torch.randn(2, *shape, device=device, dtype=torch.float64, requires_grad=True) for shape in spatial_shapes]
-    template = NT(parts, ragged_dims=tuple(range(1, spatial_rank + 1)))
-    values = template.values().detach().requires_grad_()
-    reference_parts = [part.detach().clone().requires_grad_() for part in parts]
-    samples = torch.full((1, 2, spatial_rank), 0.37, device=device, dtype=torch.float64) if ratio else None
-    kwargs = {"output_ratio": (0.5,) * spatial_rank} if ratio else {"output_size": 2}
-    expected_outputs, expected_indices = [], []
-    torch.manual_seed(716)
-    for part in reference_parts:
-        output, index = pool(part, 2, return_indices=True, _random_samples=samples, **kwargs)
-        expected_outputs.append(output)
-        expected_indices.append(index)
-    expected = NT(expected_outputs, ragged_dims=template.ragged_dims)
-
-    def run(source, packed):
-        return pool(source.packed_like(packed), 2, return_indices=True, _random_samples=samples, **kwargs)
-
-    if backend is not None:
-        run = torch.compile(run, backend=backend, fullgraph=True, dynamic=True)
-    torch.manual_seed(716)
-    actual, actual_indices = run(template, values)
-    assert_close(actual, expected)
-    assert_close(actual_indices, NT(expected_indices, ragged_dims=template.ragged_dims))
-    cotangent = torch.randn_like(actual.values())
-    expected_grads = torch.autograd.grad(expected.values(), reference_parts, cotangent)
-    assert_close(
-        torch.autograd.grad(actual.values(), values, cotangent)[0],
-        NT(expected_grads, ragged_dims=template.ragged_dims).values(),
-    )
-
-
-@pytest.mark.parametrize("p", (0.0, 1.5, 2.0, -1.0, float("inf"), float("-inf")))
-@pytest.mark.parametrize("backend", ("aot_eager", "inductor"))
-def test_normalize_ragged_fullgraph_values_and_vjp(device, backend, p):
-    torch.compiler.reset()
-    rows = (2, 4) if p < 0 or math.isinf(p) else (0, 2, 4)
-    parts = [torch.randn(size, 3, device=device, dtype=torch.float64, requires_grad=True) for size in rows]
-    with torch.no_grad():
-        parts[-1][0] = 0
-    source = NT(parts, ragged_dims=(0,))
-    packed = source.values().detach().requires_grad_()
-    references = [part.detach().clone().requires_grad_() for part in parts]
-    expected = torch.cat([F.normalize(part, p=p, dim=0) for part in references])
-    run = torch.compile(
-        lambda template, values: F.normalize(template.packed_like(values), p=p, dim=1).values(),
-        backend=backend,
-        fullgraph=True,
-        dynamic=True,
-    )
-    actual = run(source, packed)
-    assert_close(actual, expected)
-    cotangent = torch.randn_like(actual)
-    expected_grads = torch.autograd.grad(expected, references, cotangent)
-    assert_close(torch.autograd.grad(actual, packed, cotangent)[0], torch.cat(expected_grads))
-
-
-def test_gumbel_softmax_inductor_ragged_groups(device):
-    torch.compiler.reset()
-    source = NT(
-        [
-            torch.randn(2, 3, 4, device=device, dtype=torch.float64),
-            torch.randn(4, 2, 4, device=device, dtype=torch.float64),
-        ],
-        ragged_dims=(0, 1),
-    )
-    packed = source.values().detach().requires_grad_()
-    run = torch.compile(
-        lambda template, values: F.gumbel_softmax(template.packed_like(values), hard=True, dim=2),
-        backend="inductor",
-        fullgraph=True,
-        dynamic=True,
-    )
-    output = run(source, packed)
-    for part in output:
-        assert_close(part.sum(1), torch.ones_like(part.sum(1)))
-        assert torch.all((part == 0) | (part == 1))
-    gradient = torch.autograd.grad(output.values(), packed, torch.randn_like(output.values()))[0]
-    assert torch.isfinite(gradient).all()
-    assert gradient.count_nonzero() > 0
-
-
-@pytest.mark.parametrize("nonfinite", (False, True))
-def test_prelu_fullgraph_declared_ragged_channels(device, nonfinite):
-    torch.compiler.reset()
-    parts = [torch.randn(3, length, device=device, dtype=torch.float64) for length in (2, 4)]
-    if nonfinite:
-        parts[0][0, 0] = float("inf")
-    source = NT(parts, ragged_dims=(0, 1))
-    values = source.values().detach().requires_grad_()
-    weight = torch.randn(3, device=device, dtype=torch.float64, requires_grad=True)
-    if nonfinite:
-        with torch.no_grad():
-            weight[0] = float("nan")
-    reference_values = values.detach().clone().requires_grad_()
-    reference_weight = weight.detach().clone().requires_grad_()
-    references = NT(
-        [F.prelu(part.unsqueeze(0), reference_weight).squeeze(0) for part in source.packed_like(reference_values)],
-        ragged_dims=(0, 1),
-    ).values()
-    run = torch.compile(
-        lambda template, packed, slopes: F.prelu(template.packed_like(packed), slopes).values(),
-        backend="aot_eager",
-        fullgraph=True,
-        dynamic=True,
-    )
-    actual = run(source, values, weight)
-    assert_close(actual, references, equal_nan=True)
-    cotangent = torch.randn_like(actual)
-    actual_grads = torch.autograd.grad(actual, (values, weight), cotangent)
-    expected_grads = torch.autograd.grad(references, (reference_values, reference_weight), cotangent)
-    for actual_grad, expected_grad in zip(actual_grads, expected_grads):
-        assert_close(actual_grad, expected_grad, equal_nan=True)
-
-
-def test_softmin_fullgraph_ragged_values_and_vjp(device):
-    torch.compiler.reset()
-    source = NT([torch.randn(rows, 3, device=device, dtype=torch.float64) for rows in (2, 4)], ragged_dims=(0,))
-    values = source.values().detach().requires_grad_()
-    reference_values = values.detach().clone().requires_grad_()
-    expected = torch.cat([F.softmin(part, dim=0) for part in reference_values.split((2, 4))])
-    run = torch.compile(
-        lambda template, packed: F.softmin(template.packed_like(packed), dim=1).values(),
-        backend="inductor",
-        fullgraph=True,
-        dynamic=True,
-    )
-    actual = run(source, values)
-    assert_close(actual, expected)
-    cotangent = torch.randn_like(actual)
-    assert_close(
-        torch.autograd.grad(actual, values, cotangent)[0],
-        torch.autograd.grad(expected, reference_values, cotangent)[0],
-    )
-
-
-@pytest.mark.parametrize("p", (0.5, 1.5, 2.0, -1.0))
-@pytest.mark.parametrize("dtype", (torch.float64, torch.complex128))
-def test_normalize_ragged_zero_coordinate_hessian(device, p, dtype):
-    parts = [
-        torch.tensor([0.0, 2.0, 3.0], device=device, dtype=dtype),
-        torch.tensor([4.0, 5.0], device=device, dtype=dtype),
-        torch.zeros(3, device=device, dtype=dtype),
-    ]
-    source = NT(parts, ragged_dims=(0,))
-    packed = source.values().detach().requires_grad_()
-    reference = packed.detach().clone().requires_grad_()
-    cotangent = torch.tensor([1.0, -2.0, 0.5, 3.0, -0.25, 0.25, -1.0, 2.0], device=device, dtype=dtype)
-    direction = torch.tensor([2.0, 1.0, -1.0, 0.5, -3.0, 1.0, 0.5, -0.5], device=device, dtype=dtype)
-    actual = F.normalize(source.packed_like(packed), p=p, dim=1).values()
-    expected = torch.cat([F.normalize(part, p=p, dim=0) for part in reference.split((3, 2, 3))])
-    actual_grad = torch.autograd.grad(actual, packed, cotangent, create_graph=True)[0]
-    expected_grad = torch.autograd.grad(expected, reference, cotangent, create_graph=True)[0]
-    assert_close(actual_grad, expected_grad)
-    assert_close(
-        torch.autograd.grad(actual_grad, packed, direction)[0],
-        torch.autograd.grad(expected_grad, reference, direction)[0],
-        equal_nan=True,
-    )
-
-
-def test_gumbel_softmax_hard_empty_ragged_axis_matches_native(device):
-    parts = [torch.empty(0, 3, device=device), torch.randn(2, 3, device=device)]
-    source = NT(parts, ragged_dims=(0,))
-    assert F.gumbel_softmax(source, hard=False, dim=1)[0].shape == parts[0].shape
-    with pytest.raises(IndexError, match="non-zero size"):
-        F.gumbel_softmax(parts[0], hard=True, dim=0)
-    with pytest.raises(IndexError, match="non-zero size"):
-        F.gumbel_softmax(source, hard=True, dim=1)
-
-
-@pytest.mark.parametrize("dtype", (torch.float16, torch.bfloat16))
-@pytest.mark.parametrize("ragged_channels", (False, True))
-@pytest.mark.parametrize("backend", (None, "inductor"))
-def test_local_response_norm_low_precision_window_accumulation(device, dtype, ragged_channels, backend):
-    if device.type != "cuda":
-        pytest.skip("low precision native LRN reference requires CUDA")
-    torch.compiler.reset()
-    shapes = ((3, 2), (4, 3)) if ragged_channels else ((3, 2), (3, 4))
-    parts = [torch.full(shape, 180.0, device=device, dtype=dtype) for shape in shapes]
-    source = NT(parts, ragged_dims=(0, 1) if ragged_channels else (1,))
-    values = source.values().detach().requires_grad_()
-    references = [part.detach().clone().requires_grad_() for part in parts]
-    expected = NT(
-        [F.local_response_norm(part.unsqueeze(0), 3, alpha=0.2, beta=0.6).squeeze(0) for part in references],
-        ragged_dims=source.ragged_dims,
-    )
-
-    def run(template, packed):
-        return F.local_response_norm(template.packed_like(packed), 3, alpha=0.2, beta=0.6).values()
-
-    if backend is not None:
-        run = torch.compile(run, backend=backend, fullgraph=True, dynamic=True)
-    actual = run(source, values)
-    tolerances = {"rtol": 0.02, "atol": 0.002} if dtype == torch.bfloat16 else {"rtol": 0.002, "atol": 0.0002}
-    assert_close(actual, expected.values(), **tolerances)
-    cotangent = torch.ones_like(actual)
-    expected_grads = torch.autograd.grad(expected.values(), references, cotangent)
-    assert_close(
-        torch.autograd.grad(actual, values, cotangent)[0],
-        NT(expected_grads, ragged_dims=source.ragged_dims).values(),
-        **tolerances,
-    )

@@ -19,6 +19,8 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from danling.runners.base_runner import BaseRunner
@@ -46,3 +48,21 @@ def runner_factory(runner_config):
     yield create
     for runner in reversed(runners):
         runner.close()
+
+
+@pytest.fixture
+def runner_environment():
+    previous = os.environ.copy()
+
+    def configure(**values):
+        for name, value in values.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = str(value)
+
+    try:
+        yield configure
+    finally:
+        os.environ.clear()
+        os.environ.update(previous)

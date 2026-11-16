@@ -26,52 +26,35 @@ from danling.runners.compile import Compiler
 from danling.runners.config import CompileConfig
 
 
-class TestCompileConfig:
-    def test_compiler_uses_single_enable_flag(self) -> None:
-        compiler = Compiler(CompileConfig({"enabled": True}))
+@pytest.fixture
+def dynamo_config():
+    config = torch._dynamo.config
+    if not hasattr(config, "optimize_ddp"):
+        pytest.skip("DDP optimizer configuration is unavailable")
+    return config
 
-        assert compiler.enabled is True
 
-    def test_disabled_by_default(self) -> None:
-        assert Compiler(CompileConfig()).enabled is False
-        assert Compiler(CompileConfig({"enabled": False})).enabled is False
+class TestCompiler:
+    @pytest.mark.parametrize("settings,enabled", [({}, False), ({"enabled": False}, False), ({"enabled": True}, True)])
+    def test_enabled(self, settings, enabled):
+        assert Compiler(CompileConfig(settings)).enabled is enabled
 
-    def test_compile_config_passes_torch_compile_options(self) -> None:
-        compiler = Compiler(
-            CompileConfig(
-                {
-                    "backend": "inductor",
-                    "mode": "max-autotune",
-                    "fullgraph": True,
-                    "dynamic": False,
-                    "options": {"trace": {"enabled": True}},
-                }
-            )
-        )
-
-        assert compiler.kwargs == {
+    def test_options(self):
+        settings = {
             "backend": "inductor",
             "mode": "max-autotune",
             "fullgraph": True,
             "dynamic": False,
             "options": {"trace": {"enabled": True}},
         }
+        assert Compiler(CompileConfig(settings)).kwargs == settings
 
-    def test_compile_config_rejects_invalid_options(self) -> None:
-        with pytest.raises(TypeError, match="options"):
-            CompileConfig({"options": ["trace"]})
-
-    def test_compile_config_tracks_cache_artifacts_and_fingerprint(self) -> None:
+    def test_artifact_fingerprint(self):
         compiler = Compiler(
             CompileConfig(
-                {
-                    "enabled": True,
-                    "precompile_artifact_dir": "/tmp/danling-compile",
-                    "memory_policy": "cpu_offload_all",
-                }
+                {"enabled": True, "precompile_artifact_dir": "/tmp/danling-compile", "memory_policy": "cpu_offload_all"}
             )
         )
-
         assert compiler.precompile_artifact_dir == "/tmp/danling-compile"
         assert compiler.memory_policy == "cpu_offload_all"
         assert compiler.artifact_fingerprint({"parallel": {"shard": 2}}) == compiler.artifact_fingerprint(
@@ -83,74 +66,45 @@ class TestCompileConfig:
 
 
 class TestDdpOptimizerContext:
-    def test_compile_context_restores_ddp_optimizer_setting(self) -> None:
-        dynamo_config = getattr(getattr(torch, "_dynamo", None), "config", None)
-        if dynamo_config is None or not hasattr(dynamo_config, "optimize_ddp"):
-            pytest.skip("torch._dynamo.config.optimize_ddp is not available")
-
+    @pytest.mark.parametrize("enabled", [True, False])
+    def test_context_restores_setting(self, dynamo_config, enabled):
         previous = dynamo_config.optimize_ddp
-        compiler = Compiler(CompileConfig({"enabled": True, "optimize_ddp": "python_reducer"}))
-
+        compiler = Compiler(CompileConfig({"enabled": enabled, "optimize_ddp": "python_reducer"}))
         with compiler.ddp_optimizer():
-            assert dynamo_config.optimize_ddp == "python_reducer"
-
+            assert dynamo_config.optimize_ddp == ("python_reducer" if enabled else previous)
         assert dynamo_config.optimize_ddp == previous
 
-    def test_compile_context_leaves_ddp_optimizer_setting_disabled(self) -> None:
-        dynamo_config = getattr(getattr(torch, "_dynamo", None), "config", None)
-        if dynamo_config is None or not hasattr(dynamo_config, "optimize_ddp"):
-            pytest.skip("torch._dynamo.config.optimize_ddp is not available")
-
-        previous = dynamo_config.optimize_ddp
-        compiler = Compiler(CompileConfig({"enabled": False, "optimize_ddp": "python_reducer"}))
-
-        with compiler.ddp_optimizer():
-            assert dynamo_config.optimize_ddp == previous
-
-        assert dynamo_config.optimize_ddp == previous
-
-    def test_lazy_context(self, monkeypatch) -> None:
-        dynamo_config = getattr(getattr(torch, "_dynamo", None), "config", None)
-        if dynamo_config is None or not hasattr(dynamo_config, "optimize_ddp"):
-            pytest.skip("torch._dynamo.config.optimize_ddp is not available")
+    @pytest.mark.parametrize("grouped", [False, True])
+    def test_lazy_context(self, dynamo_config, grouped, isolated_compiler):
+        from copy import deepcopy
+        from uuid import uuid4
 
         observed = []
-        compile_options = []
 
-        class LazyCompiledModule(torch.nn.Module):
-            def forward(self, input):
-                observed.append(dynamo_config.optimize_ddp)
-                return input
+        def backend(graph, _inputs):
+            observed.append(dynamo_config.optimize_ddp)
+            return graph.forward
 
-        def compile_stub(obj, **kwargs):
-            compile_options.append(kwargs)
-            if isinstance(obj, torch.nn.Module):
-                return LazyCompiledModule()
-
-            def compiled_call(*args, **kwargs):
-                observed.append(dynamo_config.optimize_ddp)
-                return obj(*args, **kwargs)
-
-            return compiled_call
-
-        monkeypatch.setattr(torch, "compile", compile_stub)
+        name = "danling_context_" + uuid4().hex
+        torch._dynamo.register_backend(backend, name=name)
         previous = dynamo_config.optimize_ddp
         target = "python_reducer" if previous != "python_reducer" else False
-        compiler = Compiler(CompileConfig({"enabled": True, "optimize_ddp": target}))
-
-        compiled = compiler.compile(torch.nn.Identity())
-        assert dynamo_config.optimize_ddp == previous
-        input = torch.ones(2)
-        torch.testing.assert_close(compiled(input), input)
-        assert observed == [target]
-
-        modules = (torch.nn.Identity(), torch.nn.Identity())
+        compiler = Compiler(CompileConfig({"enabled": True, "backend": name, "optimize_ddp": target}))
+        modules = [torch.nn.Linear(2, 2) for _ in range(2 if grouped else 1)]
+        references = deepcopy(modules)
         hooks = []
         modules[0].register_forward_pre_hook(lambda *_: hooks.append("pre"))
         modules[0].register_forward_hook(lambda *_: hooks.append("post"))
-        assert compiler.compile_modules(modules) == modules
-        for module in modules:
-            torch.testing.assert_close(module(input), input)
-        assert observed == [target, target, target]
+        compiled = compiler.compile_modules(modules) if grouped else (compiler.compile(modules[0]),)
+        for module, reference in zip(compiled, references):
+            inputs = torch.ones(2, requires_grad=True)
+            ref_inputs = inputs.detach().clone().requires_grad_()
+            output, expected = module(inputs), reference(ref_inputs)
+            torch.testing.assert_close(output, expected)
+            torch.testing.assert_close(
+                torch.autograd.grad(output.sum(), (inputs, *module.parameters())),
+                torch.autograd.grad(expected.sum(), (ref_inputs, *reference.parameters())),
+            )
+        assert observed and all(value == target for value in observed)
         assert hooks == ["pre", "post"]
         assert dynamo_config.optimize_ddp == previous

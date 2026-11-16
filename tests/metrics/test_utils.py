@@ -37,7 +37,6 @@ from danling.metrics.utils import (
 class _DummyMeter:
     def __init__(self, value: float = 0.0):
         self.value_store = value
-        self.reset_calls = 0
 
     def value(self) -> float:
         return self.value_store
@@ -49,7 +48,7 @@ class _DummyMeter:
         return self.value_store + 2
 
     def reset(self):
-        self.reset_calls += 1
+        self.value_store = 0.0
         return self
 
     def __format__(self, format_spec: str) -> str:
@@ -75,7 +74,6 @@ class _StubMetric:
         self._avg = avg or val
         self.n = n
         self.count = count
-        self.reset_calls = 0
 
     def value(self):
         return RoundDict(self._val)
@@ -87,7 +85,8 @@ class _StubMetric:
         return RoundDict(self._avg)
 
     def reset(self):
-        self.reset_calls += 1
+        self._val = self._bat = self._avg = {}
+        self.n = self.count = 0
         return self
 
     def __format__(self, format_spec: str) -> str:
@@ -118,14 +117,15 @@ def _build_aggregate_stub_metrics(
 
 
 class TestMetricUtilities:
-    def test_iter_funcs_flattens_sequences_not_strings(self):
+    def test_flatten_metric_functions(self):
         assert list(iter_metric_funcs([1, [2, 3], (4, 5), "ab", b"cd"])) == [1, 2, 3, 4, 5, "ab", b"cd"]
 
-    def test_infer_name_uses_function_name(self):
+    @pytest.mark.parametrize("bound", [False, True], ids=["function", "partial"])
+    def test_callable_name(self, bound):
         def fn(a, b):
             return a + b
 
-        assert infer_metric_name(fn) == "fn"
+        assert infer_metric_name(partial(fn, 1) if bound else fn) == "fn"
 
     def test_infer_name_uses_name_attribute(self):
         class NamedCallable:
@@ -136,12 +136,6 @@ class TestMetricUtilities:
                 return a + b
 
         assert infer_metric_name(NamedCallable()) == "named_metric"
-
-    def test_infer_name_uses_partial_function(self):
-        def fn(a, b):
-            return a + b
-
-        assert infer_metric_name(partial(fn, 1)) == "fn"
 
     def test_infer_name_rejects_nameless_callable(self):
         class NamelessCallable:
@@ -178,12 +172,11 @@ class TestMetersBase:
     def test_reset_resets_all_children(self):
         meters = _DummyMeters({"a": _DummyMeter(1.0)}, b=_DummyMeter(2.0))
         meters.reset()
-        assert meters["a"].reset_calls == 1
-        assert meters["b"].reset_calls == 1
+        assert meters.value() == {"a": 0.0, "b": 0.0}
 
 
 class TestMultiTaskBase:
-    def test_skips_tasks_with_all_nan_outputs(self):
+    def test_skip_nan_tasks(self):
         metrics = MultiTaskBase(aggregate="macro")
         metrics["task1"] = _StubMetric({"acc": 0.8, "f1": 0.6})
         metrics["task2"] = _StubMetric({"acc": float("nan"), "f1": float("nan")})
@@ -252,9 +245,11 @@ class TestMultiTaskBase:
         metrics["task3"] = _StubMetric({"acc": 0.4})
 
         metrics.reset()
-        assert metrics["task1"].reset_calls == 1
-        assert metrics["task2"].reset_calls == 1
-        assert metrics["task3"].reset_calls == 1
+        assert set(metrics) == {"task1", "task2", "task3"}
+        for child in metrics.values():
+            assert child.value() == {}
+            assert child.batch() == {}
+            assert child.average() == {}
 
     def test_omits_aggregate_output_when_disabled(self):
         metrics = MultiTaskBase(aggregate=None)
@@ -273,7 +268,7 @@ class TestMultiTaskBase:
         assert output["aggregate"]["head2"]["acc"] == pytest.approx(0.4)
         assert "acc" not in output["aggregate"]
 
-    def test_empty_aggregate_when_all_outputs_are_nan(self):
+    def test_empty_aggregate(self):
         metrics = MultiTaskBase(aggregate="macro")
         metrics["task"] = _StubMetric({"score": float("nan")})
         output = metrics.value()

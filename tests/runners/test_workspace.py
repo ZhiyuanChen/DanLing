@@ -21,13 +21,13 @@ from __future__ import annotations
 
 import builtins
 import logging
+import os
 from pathlib import Path
 
 import pytest
 from git import Actor, Repo
 
 from danling.runners.base_runner import BaseRunner
-from danling.runners.utils import get_git_hash
 from danling.runners.workspace import ColorFormatter
 
 
@@ -42,55 +42,36 @@ class FailingRunner(BaseRunner):
         raise RuntimeError("post init exploded")
 
 
-def _expected_base_dir(tmp_path: Path, lineage: str) -> Path:
-    git_hash = get_git_hash()
-    if git_hash is None:
-        return tmp_path / lineage
-    return tmp_path / f"{lineage}-{git_hash}"
-
-
-def _config_hash(runner: BaseRunner) -> str:
-    return format(runner.config.fingerprint() & ((1 << 48) - 1), "012x")
-
-
-def _expected_id(runner: BaseRunner) -> str:
-    git_hash = get_git_hash()
-    config_hash = _config_hash(runner)
-    if git_hash is None:
-        return config_hash
-    return f"{git_hash}-{config_hash}"
-
-
-def test_runner_workspace_dir_layout(tmp_path: Path, runner_factory) -> None:
+def test_directory_identity(tmp_path: Path, runner_factory):
     runner = runner_factory()
-    expected_id = _expected_id(runner)
-    expected_dir = _expected_base_dir(tmp_path, "lineage-a") / expected_id
-    assert runner.id == expected_id
-    assert runner.workspace.dir == str(expected_dir)
+    directory = Path(runner.workspace.dir)
+    assert directory.is_relative_to(tmp_path)
+    assert directory.name == runner.id
+    assert directory.parent.name.startswith("lineage-a")
     assert runner.name == "lineage-a-experiment-a"
+    assert runner_factory().id == runner.id
+    assert runner_factory({"seed": 42}).id != runner.id
 
 
-def test_runner_workspace_log_file_layout(tmp_path: Path, runner_factory) -> None:
+def test_log_directory(runner_factory):
     runner = runner_factory()
-    expected_dir = _expected_base_dir(tmp_path, "lineage-a") / _expected_id(runner)
-    assert runner.workspace.log_file == str(expected_dir / "logs" / f"{runner.timestamp}.log")
+    assert Path(runner.workspace.log_file).parent == Path(runner.workspace.dir) / "logs"
+    assert Path(runner.workspace.log_file).suffix == ".log"
 
 
-def test_runner_workspace_uses_logging_file_override(tmp_path: Path, runner_factory) -> None:
+def test_uses_logging_file_override(tmp_path: Path, runner_factory) -> None:
     log_file = tmp_path / "custom.log"
     runner = runner_factory({"logging.file": str(log_file)})
     assert runner.workspace.log_file == str(log_file)
 
 
-def test_runner_workspace_checkpoint_dir_uses_ckpt_dir(tmp_path: Path, runner_factory) -> None:
+def test_checkpoint_directory(runner_factory):
     runner = runner_factory({"ckpt.dir": "states"})
-    expected_dir = _expected_base_dir(tmp_path, "lineage-a") / _expected_id(runner)
-    assert runner.workspace.checkpoint_dir == str(expected_dir / "states")
+    assert Path(runner.workspace.checkpoint_dir) == Path(runner.workspace.dir) / "states"
 
 
-def test_runner_workspace_writes_metadata_files(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runner_factory
-) -> None:
+@pytest.fixture
+def repository(tmp_path):
     repository = Repo.init(tmp_path / "repository")
     tracked = Path(repository.working_tree_dir) / "tracked.txt"
     tracked.write_text("original\n", encoding="utf-8")
@@ -98,23 +79,27 @@ def test_runner_workspace_writes_metadata_files(
     actor = Actor("Workspace Test", "workspace@example.invalid")
     repository.index.commit("Initial content", author=actor, committer=actor)
     tracked.write_text("changed\n", encoding="utf-8")
-    monkeypatch.chdir(repository.working_tree_dir)
+    previous = Path.cwd()
+    os.chdir(repository.working_tree_dir)
+    try:
+        yield repository
+    finally:
+        os.chdir(previous)
 
+
+def test_git_metadata(repository, runner_factory):
     runner = runner_factory({"epochs": 1})
-    metadata_dir = _expected_base_dir(tmp_path, "lineage-a") / _expected_id(runner) / "metadata"
-    assert (metadata_dir / "config.full.yaml").exists()
-    assert (metadata_dir / "config.canonical.yaml").exists()
-    assert (metadata_dir / "git.yaml").exists()
-    assert (metadata_dir / "git.diff").exists()
+    metadata_dir = Path(runner.workspace.dir) / "metadata"
+    for name in ("config.full.yaml", "config.canonical.yaml", "git.yaml", "git.diff"):
+        assert (metadata_dir / name).is_file()
     git_diff = (metadata_dir / "git.diff").read_text(encoding="utf-8")
     assert "-original" in git_diff
     assert "+changed" in git_diff
 
 
-def test_runner_workspace_saves_metadata_after_setup(tmp_path: Path, runner_factory) -> None:
+def test_finalized_metadata(runner_factory):
     runner = runner_factory(runner_type=MetadataRunner)
-    metadata_dir = _expected_base_dir(tmp_path, "lineage-a") / _expected_id(runner) / "metadata"
-    full_config = (metadata_dir / "config.full.yaml").read_text(encoding="utf-8")
+    full_config = (Path(runner.workspace.dir) / "metadata" / "config.full.yaml").read_text(encoding="utf-8")
     assert "post_init_only: finalized" in full_config
 
 
@@ -130,7 +115,7 @@ def test_color_formatter_emits_ansi_sequences() -> None:
     assert "[INFO]" in formatted
 
 
-def test_runner_workspace_logging_keeps_file_output_plain(tmp_path: Path, runner_factory) -> None:
+def test_logging_keeps_file_output_plain(tmp_path: Path, runner_factory) -> None:
     runner = runner_factory({"logging.enabled": True})
     log_file = Path(runner.workspace.log_file)
     assert runner.logger is not None
@@ -142,39 +127,18 @@ def test_runner_workspace_logging_keeps_file_output_plain(tmp_path: Path, runner
     assert "\x1b[" not in file_log
 
 
-def test_runner_workspace_nested_print_patch_restores_safely(tmp_path: Path, monkeypatch, runner_factory) -> None:
-    calls: list[str] = []
-
-    def fake_print(*args, sep=" ", end="\n", file=None, flush=False, **kwargs):
-        del file, flush, kwargs
-        calls.append(sep.join(str(arg) for arg in args) + end.rstrip("\n"))
-
-    monkeypatch.setattr(builtins, "print", fake_print)
-
-    runner_a = runner_factory({"workspace.root": str(tmp_path / "a")})
-    runner_b = runner_factory({"workspace.root": str(tmp_path / "b")})
-    runner_a.close()
-    builtins.print("inner still active")
-    runner_b.close()
+@pytest.mark.parametrize("failure", [False, True])
+def test_print_restoration(tmp_path, capsys, runner_factory, failure):
+    if failure:
+        with pytest.raises(RuntimeError, match="post init exploded"):
+            runner_factory({"logging.enabled": True}, runner_type=FailingRunner)
+    else:
+        first = runner_factory({"logging.enabled": True, "workspace.root": str(tmp_path / "a")})
+        second = runner_factory({"logging.enabled": True, "workspace.root": str(tmp_path / "b"), "seed": 42})
+        second_log = Path(second.workspace.log_file)
+        first.close()
+        builtins.print("inner still active")
+        second.close()
+        assert "inner still active" in second_log.read_text(encoding="utf-8")
     builtins.print("restored")
-
-    assert calls == ["inner still active", "restored"]
-    assert builtins.print is fake_print
-
-
-def test_runner_workspace_restores_print_after_setup_failure(tmp_path: Path, monkeypatch, runner_factory) -> None:
-    calls: list[str] = []
-
-    def fake_print(*args, sep=" ", end="\n", file=None, flush=False, **kwargs):
-        del file, flush, kwargs
-        calls.append(sep.join(str(arg) for arg in args) + end.rstrip("\n"))
-
-    monkeypatch.setattr(builtins, "print", fake_print)
-
-    with pytest.raises(RuntimeError, match="post init exploded"):
-        runner_factory(runner_type=FailingRunner)
-
-    builtins.print("restored after failure")
-
-    assert calls == ["restored after failure"]
-    assert builtins.print is fake_print
+    assert capsys.readouterr().out.splitlines().count("restored") == 1

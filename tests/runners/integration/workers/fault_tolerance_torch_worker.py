@@ -11,6 +11,7 @@ import torch
 from torch import nn
 
 from danling.runners import TorchRunner
+from tests.runners.distributed import remaining_batches
 
 
 class TinyFaultToleranceTorchRunner(TorchRunner):
@@ -81,7 +82,7 @@ def main() -> None:
         if runner.rank == 0:
             status = {
                 "global_step": int(runner.train_state.global_step),
-                "cursor": int(runner.dataloaders["train"].state_dict()["_num_yielded"]),
+                "remaining_batches": remaining_batches(runner.dataloaders["train"]),
                 "weights": runner.unwrap(runner.model).weight.detach().cpu().tolist(),
             }
             status_path = run_dir / f"ft-status-replica-{args.replica_id}.json"

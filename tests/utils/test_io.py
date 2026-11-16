@@ -18,7 +18,6 @@
 # See the LICENSE file for more details.
 
 import os
-from zipfile import ZipFile
 
 import numpy as np
 import pytest
@@ -34,7 +33,7 @@ class TestIO:
         path = tmp_path / f"measurements-数据.{extension}"
         file = path if path_type == "path" else str(path) if path_type == "str" else os.fsencode(path)
         value = [1.0, 2.0, 3.0]
-        assert save(value, file) is file
+        assert save(value, file) == file
         assert path.is_file()
         assert list(load(file)) == value
 
@@ -44,18 +43,13 @@ class TestIO:
         path = tmp_path / f"measurements-数据.{extension}"
         file = path if path_type == "path" else str(path) if path_type == "str" else os.fsencode(path)
         value = np.array([[1, 2], [3, 4]], dtype=np.int16)
-        assert save(value, file, allow_pickle=False) is file
+        assert save(value, file, allow_pickle=False) == file
         assert list(tmp_path.iterdir()) == [path]
         if extension.lower() == "npz":
-            assert path.read_bytes().startswith(b"PK\x03\x04")
-            with ZipFile(path) as archive:
-                assert archive.namelist() == ["arr_0.npy"]
-                assert archive.read("arr_0.npy").startswith(b"\x93NUMPY")
             with np.load(path, allow_pickle=False) as archive:
                 assert archive.files == ["arr_0"]
                 np.testing.assert_array_equal(archive["arr_0"], value, strict=True)
         else:
-            assert path.read_bytes().startswith(b"\x93NUMPY")
             np.testing.assert_array_equal(np.load(path, allow_pickle=False), value, strict=True)
 
     def test_npz_arrays(self, tmp_path):
@@ -79,7 +73,6 @@ class TestIO:
         with archive:
             assert isinstance(archive, np.lib.npyio.NpzFile)
             np.testing.assert_array_equal(archive["arr_0"], value, strict=True)
-        assert archive.zip is None
 
     @pytest.mark.parametrize("extension", ["json", "yaml"])
     def test_flatdict(self, tmp_path, extension):

@@ -87,7 +87,7 @@ class TestRegressionMetrics:
         assert_metric_close(mae(num_outputs=2)(state), expected_mae)
 
     @pytest.mark.parametrize("metric", [mse, rmse, mae])
-    def test_error_metrics_reject_mismatched_num_outputs(self, metric) -> None:
+    def test_output_count_error(self, metric) -> None:
         state = MetricState(preds=torch.ones(3, 2), targets=torch.ones(3, 2))
         with pytest.raises(ValueError):
             metric(num_outputs=3)(state)

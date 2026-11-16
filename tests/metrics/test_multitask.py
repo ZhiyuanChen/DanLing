@@ -19,8 +19,6 @@
 
 from __future__ import annotations
 
-import random
-
 import pytest
 import torch
 from torch.testing import assert_close
@@ -131,8 +129,6 @@ def _distributed_multitask_micro_worker(rank: int, world_size: int):
 
 class TestMultiTaskMetrics:
     def test_accepts_sequence_payloads(self):
-        random.seed(1016)
-        torch.random.manual_seed(1016)
         metrics = MultiTaskMetrics()
         metrics.a = binary_metrics(mode="stream")
         metrics.b = binary_metrics(mode="stream")
@@ -191,7 +187,7 @@ class TestMultiTaskMetrics:
         metrics.update({"score": (torch.tensor([1.0, 0.0]), torch.tensor([1.0, 1.0]))})
         assert metrics.avg["score"]["score"] == pytest.approx(0.5)
 
-    def test_keeps_explicit_metric_meter_output_name(self):
+    def test_explicit_output_name(self):
         meter = MetricMeter(lambda input, target: (input == target).float().mean())
         meter.output_name = "accuracy"
         metrics = MultiTaskMetrics()
@@ -202,7 +198,7 @@ class TestMultiTaskMetrics:
         assert metrics["score"].output_name == "accuracy"
         assert metrics.avg["score"]["accuracy"] == pytest.approx(0.5)
 
-    def test_uses_task_name_when_metric_name_is_unknown(self):
+    def test_callable_output_name(self):
         class CallableMetric:
             def __call__(self, input, target):
                 return (input == target).float().mean()
@@ -215,25 +211,21 @@ class TestMultiTaskMetrics:
         assert metrics["score"].output_name == "score"
         assert metrics.avg["score"]["score"] == pytest.approx(0.5)
 
-    def test_macro_averages_shared_scalar_metric_names(self):
+    @pytest.mark.parametrize(
+        "aggregate,weights,expected",
+        [("macro", None, 0.5), ("micro", None, 0.25), ("weighted", {"a": 1.0, "b": 3.0}, 0.25)],
+    )
+    def test_scalar_aggregation(self, aggregate, weights, expected):
         def shared_score(input, target):
-            del target
             return input.float().mean()
 
-        metrics = MultiTaskMetrics(aggregate="macro")
+        metrics = MultiTaskMetrics(aggregate=aggregate, aggregate_weights=weights)
         metrics.a = shared_score
         metrics.b = MetricMeter(shared_score)
+        metrics.update({"a": (torch.ones(1), torch.zeros(1)), "b": (torch.zeros(3), torch.zeros(3))})
+        assert metrics.avg["aggregate"]["shared_score"] == pytest.approx(expected)
 
-        metrics.update(
-            {
-                "a": (torch.ones(1), torch.zeros(1)),
-                "b": (torch.zeros(3), torch.zeros(3)),
-            }
-        )
-
-        assert metrics.avg["aggregate"]["shared_score"] == pytest.approx(0.5)
-
-    def test_macro_averages_shared_tensor_metric_names(self):
+    def test_tensor_aggregation(self):
         def shared_vector(input, target):
             del target
             return input.float().mean(dim=0)
@@ -251,42 +243,6 @@ class TestMultiTaskMetrics:
 
         assert_close(metrics.avg["aggregate"]["vector"], torch.tensor([1.5, 3.5], dtype=torch.float64))
 
-    def test_micro_averages_by_sample_count(self):
-        def shared_score(input, target):
-            del target
-            return input.float().mean()
-
-        metrics = MultiTaskMetrics(aggregate="micro")
-        metrics.a = shared_score
-        metrics.b = MetricMeter(shared_score)
-
-        metrics.update(
-            {
-                "a": (torch.ones(1), torch.zeros(1)),
-                "b": (torch.zeros(3), torch.zeros(3)),
-            }
-        )
-
-        assert metrics.avg["aggregate"]["shared_score"] == pytest.approx(0.25)
-
-    def test_weighted_averages_by_explicit_weight(self):
-        def shared_score(input, target):
-            del target
-            return input.float().mean()
-
-        metrics = MultiTaskMetrics(aggregate="weighted", aggregate_weights={"a": 1.0, "b": 3.0})
-        metrics.a = shared_score
-        metrics.b = MetricMeter(shared_score)
-
-        metrics.update(
-            {
-                "a": (torch.ones(1), torch.zeros(1)),
-                "b": (torch.zeros(3), torch.zeros(3)),
-            }
-        )
-
-        assert metrics.avg["aggregate"]["shared_score"] == pytest.approx(0.25)
-
     def test_set_invalid_does_not_mutate(self):
         metrics = MultiTaskMetrics()
         assert list(metrics.keys()) == []
@@ -298,8 +254,8 @@ class TestMultiTaskMetrics:
 
 
 class TestDistributedMultiTaskMetrics:
-    def test_macro_averages_matching_metrics(self):
-        run_distributed(_distributed_multitask_worker, world_size=2)
-
-    def test_micro_averages_matching_metrics(self):
-        run_distributed(_distributed_multitask_micro_worker, world_size=2)
+    @pytest.mark.parametrize(
+        "worker", [_distributed_multitask_worker, _distributed_multitask_micro_worker], ids=["macro", "micro"]
+    )
+    def test_aggregation(self, worker):
+        run_distributed(worker, world_size=2)

@@ -27,7 +27,7 @@ from danling.runners.utils import format_result, get_time_str
 from danling.utils import base60
 
 
-def test_format_result_formats_nested_scalar_like_values() -> None:
+def test_nested_result_format() -> None:
     result = {
         "train": {
             "loss": 0.7303,

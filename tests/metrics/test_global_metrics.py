@@ -19,7 +19,6 @@
 
 from __future__ import annotations
 
-import random
 from functools import partial
 
 import pytest
@@ -84,14 +83,14 @@ def _updated_binary_metrics(num_batches: int = 3, batch_size: int = 6):
 
 class TestGlobalMetricsLocalBehavior:
 
-    def test_class_first_nested_scores_keep_observation_alignment(self):
+    def test_class_axis_alignment(self):
         scores = [torch.tensor([[10.0, 0.0], [0.0, 10.0], [0.0, 0.0]]), torch.eye(3) * 10]
         labels = [torch.tensor([0, 1]), torch.tensor([0, 1, 2])]
         metrics = GlobalMetrics(multiclass_accuracy(3), distributed=False)
         metrics.update(NestedTensor(scores), NestedTensor(labels))
         assert float(metrics.average()["acc"]) == pytest.approx(1.0)
 
-    def test_single_sample_batches_snapshot_prediction_values(self):
+    def test_single_sample_snapshot(self):
         from danling.metrics.functional import mse
 
         metrics = GlobalMetrics(mse(), distributed=False)
@@ -110,8 +109,6 @@ class TestGlobalMetricsLocalBehavior:
             GlobalMetrics(preprocess=preprocess_binary, distributed=False, bad=1)  # type: ignore[arg-type]
 
     def test_binary_value(self):
-        random.seed(1016)
-        torch.random.manual_seed(1016)
         metrics = make_binary_metrics(distributed=False)
         function_map = build_function_map("binary")
 
@@ -124,8 +121,6 @@ class TestGlobalMetricsLocalBehavior:
             assert_metric_outputs(metrics.value(), function_map, pred, target)
 
     def test_binary_average(self):
-        random.seed(1016)
-        torch.random.manual_seed(1016)
         metrics = make_binary_metrics(distributed=False)
         function_map = build_function_map("binary")
         preds, targets = [], []
@@ -145,8 +140,6 @@ class TestGlobalMetricsLocalBehavior:
         assert_close(metrics.targets, torch.cat(targets), rtol=RTOL, atol=ATOL)
 
     def test_multiclass_value(self):
-        random.seed(1016)
-        torch.random.manual_seed(1016)
         num_classes = 10
         metrics = make_multiclass_metrics(num_classes=num_classes, distributed=False)
         function_map = build_function_map("multiclass", num_classes=num_classes)
@@ -160,8 +153,6 @@ class TestGlobalMetricsLocalBehavior:
             assert_metric_outputs(metrics.value(), function_map, pred, target)
 
     def test_multiclass_average(self):
-        random.seed(1016)
-        torch.random.manual_seed(1016)
         num_classes = 10
         metrics = make_multiclass_metrics(num_classes=num_classes, distributed=False)
         function_map = build_function_map("multiclass", num_classes=num_classes)
@@ -182,8 +173,6 @@ class TestGlobalMetricsLocalBehavior:
         assert_close(metrics.targets, torch.cat(targets), rtol=RTOL, atol=ATOL)
 
     def test_multiclass_topk_value(self):
-        random.seed(1016)
-        torch.random.manual_seed(1016)
         num_classes = 6
         k = 3
         metrics = GlobalMetrics(
@@ -214,8 +203,6 @@ class TestGlobalMetricsLocalBehavior:
             )
 
     def test_multiclass_topk_average(self):
-        random.seed(1016)
-        torch.random.manual_seed(1016)
         num_classes = 6
         k = 3
         metrics = GlobalMetrics(
@@ -249,8 +236,6 @@ class TestGlobalMetricsLocalBehavior:
         )
 
     def test_multilabel_value(self):
-        random.seed(1016)
-        torch.random.manual_seed(1016)
         num_labels = 10
         metrics = make_multilabel_metrics(num_labels=num_labels, distributed=False)
         function_map = build_function_map("multilabel", num_labels=num_labels)
@@ -264,8 +249,6 @@ class TestGlobalMetricsLocalBehavior:
             assert_metric_outputs(metrics.value(), function_map, pred, target)
 
     def test_multilabel_average(self):
-        random.seed(1016)
-        torch.random.manual_seed(1016)
         num_labels = 10
         metrics = make_multilabel_metrics(num_labels=num_labels, distributed=False)
         function_map = build_function_map("multilabel", num_labels=num_labels)
@@ -286,8 +269,6 @@ class TestGlobalMetricsLocalBehavior:
         assert_close(metrics.targets, torch.cat(targets), rtol=RTOL, atol=ATOL)
 
     def test_regression_value_with_nested_tensors(self):
-        random.seed(1016)
-        torch.random.manual_seed(1016)
         num_outputs = 2
         metrics = make_regression_metrics(num_outputs=num_outputs, distributed=False)
         function_map = build_function_map("regression", num_outputs=num_outputs)
@@ -304,8 +285,6 @@ class TestGlobalMetricsLocalBehavior:
             assert_metric_outputs(metrics.value(), function_map, torch.cat(pred_list), torch.cat(target_list))
 
     def test_regression_average_with_nested_tensors(self):
-        random.seed(1016)
-        torch.random.manual_seed(1016)
         num_outputs = 2
         metrics = make_regression_metrics(num_outputs=num_outputs, distributed=False)
         function_map = build_function_map("regression", num_outputs=num_outputs)
@@ -328,55 +307,28 @@ class TestGlobalMetricsLocalBehavior:
         assert_close(metrics.preds, torch.cat(preds), rtol=RTOL, atol=ATOL)
         assert_close(metrics.targets, torch.cat(targets), rtol=RTOL, atol=ATOL)
 
-    def test_average_preserves_public_artifacts(self):
+    def test_average(self):
         metrics, expected_preds, expected_targets = _updated_binary_metrics()
-
-        _ = metrics.average()
+        first = metrics.average()
+        second = metrics.average()
+        assert_close(first, second, rtol=RTOL, atol=ATOL, check_dtype=False)
         assert_close(metrics.preds, expected_preds, rtol=RTOL, atol=ATOL)
         assert_close(metrics.targets, expected_targets, rtol=RTOL, atol=ATOL)
 
-    def test_average_is_idempotent(self):
-        metrics, _, _ = _updated_binary_metrics()
-
-        first = metrics.average()
-        second = metrics.average()
-        for key in first:
-            assert_close(
-                torch.as_tensor(first[key]),
-                torch.as_tensor(second[key]),
-                rtol=RTOL,
-                atol=ATOL,
-                check_dtype=False,
-            )
-
-    def test_reset_clears_state(self):
+    def test_reset(self):
         metrics = make_binary_metrics(distributed=False)
         metrics.update(torch.tensor([0.2, 0.8, 0.9]), torch.tensor([0, 1, 0]))
-
-        assert metrics.n == 3
-        assert metrics.count == 3
+        assert metrics.n == metrics.count == 3
         assert metrics.confmat is not None
-
         assert metrics.reset() is metrics
-        assert metrics.n == 0
-        assert metrics.count == 0
-        assert metrics.preds.numel() == 0
-        assert metrics.targets.numel() == 0
+        assert metrics.n == metrics.count == 0
+        assert metrics.preds.numel() == metrics.targets.numel() == 0
         assert metrics.confmat is None
-
-        for value in metrics.value().values():
-            assert torch.isnan(torch.as_tensor(value)).all()
-        for value in metrics.average().values():
-            assert torch.isnan(torch.as_tensor(value)).all()
-
-    def test_reset_allows_reuse(self):
-        metrics = make_binary_metrics(distributed=False)
-        metrics.update(torch.tensor([0.2, 0.8, 0.9]), torch.tensor([0, 1, 0]))
-        metrics.reset()
+        for result in (metrics.value(), metrics.average()):
+            assert all(torch.isnan(torch.as_tensor(value)).all() for value in result.values())
 
         metrics.update(torch.tensor([0.2, 0.8]), torch.tensor([0, 1]))
-        assert metrics.n == 2
-        assert metrics.count == 2
+        assert metrics.n == metrics.count == 2
         assert metrics.value()["acc"] == pytest.approx(1.0)
 
     def test_update_detaches_last_batch(self):
@@ -468,8 +420,6 @@ class TestGlobalMetricsLocalBehavior:
         assert {"auroc", "acc"} <= set(metrics.avg.keys())
 
     def test_multiclass_confmat_with_ignore_index(self):
-        random.seed(1016)
-        torch.random.manual_seed(1016)
         num_classes = 7
         ignore_index = -100
         average = "macro"
@@ -550,9 +500,7 @@ class TestGlobalMetricsLocalBehavior:
             assert_metric_outputs(metrics.value(), function_map, pred, processed_target)
             assert_metric_outputs(metrics.average(), function_map, torch.cat(preds), torch.cat(targets))
 
-    def test_multilabel_confmat_with_elementwise_ignore_index(self):
-        random.seed(1016)
-        torch.random.manual_seed(1016)
+    def test_multilabel_ignore_index(self):
         num_labels = 6
         ignore_index = -100
         average = "macro"
@@ -618,40 +566,6 @@ class TestGlobalMetricsLocalBehavior:
             metrics.update(logits, target)
             assert_metric_outputs(metrics.value(), function_map, pred, processed_target)
             assert_metric_outputs(metrics.average(), function_map, torch.cat(preds), torch.cat(targets))
-
-
-class TestDistributedGlobalMetrics:
-
-    def test_average_after_only_one_rank_updates(self):
-        run_distributed(_distributed_uneven_metric_updates_worker, world_size=2)
-
-    def test_binary_average_syncs_across_ranks(self):
-        run_distributed(_distributed_binary_worker, world_size=2)
-
-    def test_multiclass_average_syncs_across_ranks(self):
-        run_distributed(_distributed_multiclass_worker, world_size=2)
-
-    def test_multilabel_average_syncs_across_ranks(self):
-        run_distributed(_distributed_multilabel_worker, world_size=2)
-
-    def test_binary_sync_handles_empty_rank(self):
-        run_distributed(_distributed_binary_empty_rank_worker, world_size=2)
-
-    def test_batch_syncs_current_step(self):
-        run_distributed(_distributed_global_batch_worker, world_size=2)
-
-    def test_public_artifacts_sync_after_average(self):
-        run_distributed(_distributed_global_public_artifacts_worker, world_size=2)
-
-    def test_batch_without_declared_artifacts(self):
-        run_distributed(_distributed_global_stateless_batch_worker, world_size=2)
-
-    def test_exact_metrics_handle_empty_rank(self):
-        run_distributed(_distributed_global_exact_empty_rank_worker, world_size=2)
-
-    def test_binary_average_syncs_across_ranks_with_nccl(self):
-        require_nccl_cuda(world_size=2)
-        run_distributed(_distributed_binary_nccl_worker, world_size=2)
 
 
 def _distributed_binary_worker(rank: int, world_size: int):
@@ -916,3 +830,37 @@ def _distributed_uneven_metric_updates_worker(rank: int, world_size: int):
         if rank == 0:
             metrics.update(torch.full((2,), 3.0), torch.zeros(2))
         assert_close(metrics.average()["mse"], torch.tensor(22.0 / 6.0))
+
+
+class TestDistributedGlobalMetrics:
+    @pytest.mark.parametrize(
+        "worker",
+        [
+            _distributed_uneven_metric_updates_worker,
+            _distributed_binary_worker,
+            _distributed_multiclass_worker,
+            _distributed_multilabel_worker,
+            _distributed_binary_empty_rank_worker,
+            _distributed_global_batch_worker,
+            _distributed_global_public_artifacts_worker,
+            _distributed_global_stateless_batch_worker,
+            _distributed_global_exact_empty_rank_worker,
+        ],
+        ids=[
+            "uneven",
+            "binary",
+            "multiclass",
+            "multilabel",
+            "empty-rank",
+            "batch",
+            "artifacts",
+            "stateless",
+            "exact-empty",
+        ],
+    )
+    def test_sync(self, worker):
+        run_distributed(worker, world_size=2)
+
+    def test_nccl_sync(self):
+        require_nccl_cuda(world_size=2)
+        run_distributed(_distributed_binary_nccl_worker, world_size=2)

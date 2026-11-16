@@ -35,7 +35,7 @@ class TinyFaultToleranceRunner(TorchRunner):
         self.optimizer = optim.SGD(self.model.parameters(), lr=0.1)
 
 
-def test_fault_tolerance_is_disabled_by_default() -> None:
+def test_disabled_by_default() -> None:
     runner = TinyFaultToleranceRunner({"logging.enabled": False})
     try:
         assert runner.fault_tolerance is not None
@@ -46,7 +46,7 @@ def test_fault_tolerance_is_disabled_by_default() -> None:
         runner.close()
 
 
-def test_fault_tolerance_requires_torchft_when_enabled() -> None:
+def test_requires_torchft() -> None:
     if importlib.util.find_spec("torchft") is not None:
         pytest.skip("torchft is installed")
 
@@ -87,7 +87,7 @@ def _resume_loader(values):
 
 
 @pytest.mark.parametrize("heal_on_start", [1, 2])
-def test_healing_at_step_budget_does_not_fetch_or_train_again(tmp_path, heal_on_start) -> None:
+def test_healing_respects_step_budget(tmp_path, heal_on_start) -> None:
     config = {"device": "cpu", "logging.enabled": False, "steps": 2, "ckpt.enabled": False}
     donor = TinyFaultToleranceRunner({**config, "workspace.dir": str(tmp_path / "donor")})
     receiver = TinyFaultToleranceRunner({**config, "workspace.dir": str(tmp_path / "receiver")})
@@ -111,7 +111,7 @@ def test_healing_at_step_budget_does_not_fetch_or_train_again(tmp_path, heal_on_
         receiver.train_steps(["train"], [])
         assert receiver.train_state.global_step == 2
         assert manager.votes == 2
-        assert receiver.dataloaders["train"].state_dict()["_num_yielded"] == 2
+        torch.testing.assert_close(next(iter(receiver.dataloaders["train"]))[0], torch.full((1, 4), 3.0))
         for actual, expected in zip(receiver.model.parameters(), donor.model.parameters()):
             torch.testing.assert_close(actual, expected)
     finally:
@@ -119,7 +119,7 @@ def test_healing_at_step_budget_does_not_fetch_or_train_again(tmp_path, heal_on_
         donor.close()
 
 
-def test_healing_replans_restored_split_target_before_fetching(tmp_path) -> None:
+def test_healing_replans_split(tmp_path) -> None:
     class RecordingRunner(TinyFaultToleranceRunner):
         def __init__(self, config):
             super().__init__(config)
@@ -156,8 +156,14 @@ def test_healing_replans_restored_split_target_before_fetching(tmp_path) -> None
         receiver.train_steps(["a", "b"], [])
         assert receiver.consumed == [("b", 12), ("b", 13), ("a", 1)]
         assert receiver.train_state.global_step == manager.votes == 4
-        assert receiver.dataloaders["a"].state_dict()["_num_yielded"] == 1
-        assert receiver.dataloaders["b"].state_dict()["_num_yielded"] == 3
+        checkpoint = receiver.state_dict()
+        for split, values, expected in (
+            ("a", range(1, 7), list(range(2, 7))),
+            ("b", range(11, 17), list(range(14, 17))),
+        ):
+            resumed = _resume_loader(values)
+            resumed.load_state_dict(checkpoint["dataloaders"][split])
+            assert [int(batch[0][0, 0].item()) for batch in resumed] == expected
         donor.train_step(next(b_iterator))
         donor.train_step(next(b_iterator))
         donor.train_step(next(iter(donor.dataloaders["a"])))
@@ -168,28 +174,32 @@ def test_healing_replans_restored_split_target_before_fetching(tmp_path) -> None
         donor.close()
 
 
-def test_rejected_quorum_preserves_optimizer_scheduler_ema_and_update_count(tmp_path) -> None:
-    runner = TinyFaultToleranceRunner({"logging.enabled": False, "workspace.dir": str(tmp_path)})
+def test_rejected_quorum_preserves_update_state(tmp_path) -> None:
+    class EmaRunner(TinyFaultToleranceRunner):
+        def update_ema(self):
+            self.ema.load_state_dict(self.model.state_dict())
+
+    runner = EmaRunner({"logging.enabled": False, "workspace.dir": str(tmp_path)})
     manager = _QuorumManager([False, True])
     runner.fault_tolerance._manager = manager
     runner.scheduler = optim.lr_scheduler.StepLR(runner.optimizer, step_size=1, gamma=0.5)
     runner._bind_optimizer_container()
-    ema_updates = []
-    runner.update_ema = lambda: ema_updates.append(runner.train_state.global_step)
+    runner.ema = deepcopy(runner.model)
+    ema_before = deepcopy(runner.ema.state_dict())
     inputs, targets = torch.ones(2, 4), torch.zeros(2, 2)
     before = [parameter.detach().clone() for parameter in runner.model.parameters()]
     try:
         runner.train_step((inputs, targets))
         assert runner.train_state.global_step == 0
         assert runner.scheduler.last_epoch == 0
-        assert not ema_updates
+        torch.testing.assert_close(runner.ema.state_dict(), ema_before)
         for parameter, expected in zip(runner.model.parameters(), before):
             torch.testing.assert_close(parameter, expected)
             assert parameter.grad is None
         runner.train_step((inputs, targets))
         assert runner.train_state.global_step == 1
         assert runner.scheduler.last_epoch == 1
-        assert len(ema_updates) == 1
+        torch.testing.assert_close(runner.ema.state_dict(), runner.model.state_dict())
         assert any(
             not torch.equal(parameter, expected) for parameter, expected in zip(runner.model.parameters(), before)
         )
@@ -202,7 +212,7 @@ def test_rejected_quorum_preserves_optimizer_scheduler_ema_and_update_count(tmp_
         runner.close()
 
 
-def test_nonfinite_microbatch_rejects_entire_fault_tolerant_accumulation(tmp_path) -> None:
+def test_nonfinite_accumulation_rejected(tmp_path) -> None:
     runner = TinyFaultToleranceRunner(
         {"logging.enabled": False, "workspace.dir": str(tmp_path), "accum_steps": 2, "skip_nonfinite_loss": True}
     )
@@ -222,7 +232,7 @@ def test_nonfinite_microbatch_rejects_entire_fault_tolerant_accumulation(tmp_pat
         runner.close()
 
 
-def test_zero_weight_window_finishes_quorum_without_advancing_updates(tmp_path) -> None:
+def test_empty_window_preserves_updates(tmp_path) -> None:
     runner = TinyFaultToleranceRunner({"logging.enabled": False, "workspace.dir": str(tmp_path)})
     manager = _QuorumManager([True])
     runner.fault_tolerance._manager = manager
@@ -501,7 +511,7 @@ class TestIntegration:
             assert status_path.is_file()
             status = json.loads(status_path.read_text(encoding="utf-8"))
             assert status["global_step"] == 2
-            assert status["cursor"] == 2
+            assert status["remaining_batches"] == 2
 
     def test_torch_resume(self, tmp_path: Path) -> None:
         _require_torchft_ddp_runtime()
@@ -528,7 +538,7 @@ class TestIntegration:
             assert status_path.is_file()
             status = json.loads(status_path.read_text(encoding="utf-8"))
             assert status["global_step"] == 2
-            assert status["cursor"] == 2
+            assert status["remaining_batches"] == 2
 
     def test_torch_restarts(self, tmp_path: Path) -> None:
         _require_torchft_ddp_runtime()
@@ -557,4 +567,4 @@ class TestIntegration:
             assert status_path.is_file()
             status = json.loads(status_path.read_text(encoding="utf-8"))
             assert status["global_step"] == 4
-            assert status["cursor"] == 4
+            assert status["remaining_batches"] == 0

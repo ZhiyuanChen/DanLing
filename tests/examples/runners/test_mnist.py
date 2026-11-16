@@ -18,6 +18,8 @@
 # See the LICENSE file for more details.
 
 import importlib.util
+import math
+import struct
 from pathlib import Path
 
 import pytest
@@ -42,13 +44,26 @@ def torch_mnist_module():
 
 @pytest.fixture(scope="module")
 def mnist_data_root(tmp_path_factory):
-    return tmp_path_factory.mktemp("mnist_data")
+    root = tmp_path_factory.mktemp("mnist_data")
+    raw = root / "MNIST" / "raw"
+    raw.mkdir(parents=True)
+    images = bytes(index % 256 for index in range(4 * 28 * 28))
+    labels = bytes(range(4))
+    for split in ("train", "t10k"):
+        (raw / f"{split}-images-idx3-ubyte").write_bytes(struct.pack(">IIII", 2051, 4, 28, 28) + images)
+        (raw / f"{split}-labels-idx1-ubyte").write_bytes(struct.pack(">II", 2049, 4) + labels)
+    return root
 
 
 @pytest.fixture
-def runner(torch_mnist_module, mnist_data_root):
+def runner(torch_mnist_module, mnist_data_root, tmp_path):
     config = torch_mnist_module.MNISTConfig().boot()
     config.dataset.root = str(mnist_data_root)
+    config.dataset.download = False
+    config.workspace.root = str(tmp_path)
+    config.epochs = 1
+    config.dataloader.batch_size = 2
+    config.ckpt.enabled = False
     instance = torch_mnist_module.MNISTRunner(config)
     try:
         yield instance
@@ -57,8 +72,11 @@ def runner(torch_mnist_module, mnist_data_root):
 
 
 def test_train(runner):
-    runner.train()
+    results = runner.train()
+    assert runner.train_state.global_step == 2
+    assert math.isfinite(results[0]["train"]["loss"])
 
 
 def test_evaluate(runner):
-    runner.evaluate(["val"])
+    results = runner.evaluate(["val"])
+    assert math.isfinite(results["val"]["loss"])

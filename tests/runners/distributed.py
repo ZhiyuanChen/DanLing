@@ -23,6 +23,7 @@ import os
 import random
 import socket
 from contextlib import contextmanager
+from time import monotonic
 
 import pytest
 import torch
@@ -62,7 +63,17 @@ def run_distributed(worker, world_size: int = 2, *, seed: int = 1016, worker_arg
     try:
         random.seed(seed)
         torch.manual_seed(seed)
-        spawn(worker, args=(world_size, *worker_args), nprocs=world_size, join=True)
+        processes = spawn(worker, args=(world_size, *worker_args), nprocs=world_size, join=False)
+        deadline = monotonic() + 120
+        try:
+            while not processes.join(timeout=1):
+                if monotonic() >= deadline:
+                    raise TimeoutError("Distributed test workers did not finish within 120 seconds")
+        finally:
+            for process in processes.processes:
+                if process.is_alive():
+                    process.terminate()
+                process.join(timeout=10)
     finally:
         if master_addr is None:
             os.environ.pop("MASTER_ADDR", None)
@@ -90,8 +101,8 @@ def destroy_process_group() -> None:
 
 def require_gloo(world_size: int = 2) -> None:
     del world_size
-    if not dist.is_available():
-        pytest.skip("torch.distributed is unavailable in this PyTorch build.")
+    if not dist.is_available() or not dist.is_gloo_available():
+        pytest.skip("Gloo is unavailable in this PyTorch build.")
 
 
 def require_nccl_cuda(world_size: int = 2) -> None:
@@ -103,3 +114,20 @@ def require_nccl_cuda(world_size: int = 2) -> None:
         pytest.skip("CUDA is unavailable in this environment.")
     if torch.cuda.device_count() < world_size:
         pytest.skip(f"Expected at least {world_size} CUDA devices, found {torch.cuda.device_count()}.")
+
+
+def remaining_batches(loader):
+    """Observe a saved loader cursor through an independent public round trip."""
+    from copy import deepcopy
+
+    from torchdata.stateful_dataloader import StatefulDataLoader
+
+    reference = StatefulDataLoader(
+        loader.dataset,
+        batch_size=loader.batch_size,
+        sampler=deepcopy(loader.sampler),
+        collate_fn=loader.collate_fn,
+        drop_last=loader.drop_last,
+    )
+    reference.load_state_dict(loader.state_dict())
+    return len(list(reference))

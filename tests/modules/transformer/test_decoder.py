@@ -19,7 +19,6 @@
 
 import pytest
 import torch
-from torch import nn
 
 from danling.modules.transformer.decoder import TransformerDecoder, TransformerDecoderLayer
 
@@ -43,11 +42,8 @@ class TestDecoderLayer:
         inputs = torch.randn(2, 4, 8) + 5
         layer = TransformerDecoderLayer(8, 2, norm_first=True, dropout=0, attn_dropout=0, ffn_dropout=0)
         with torch.no_grad():
-            for module in layer.modules():
-                if isinstance(module, nn.Linear):
-                    module.weight.zero_()
-                    if module.bias is not None:
-                        module.bias.zero_()
+            for parameter in layer.parameters():
+                parameter.zero_()
         outputs, _ = layer(inputs, inputs)
         torch.testing.assert_close(outputs, inputs)
 

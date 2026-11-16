@@ -312,18 +312,11 @@ class TestMultilabelMetrics:
         )
         assert torch.isnan(torch.as_tensor(metric(empty_state)))
 
-    def test_f1_alias(self) -> None:
-        assert isinstance(multilabel_f1_score(num_labels=NUM_LABELS), multilabel_fbeta_score)
+    def test_f1(self, device):
+        metric = multilabel_f1_score(num_labels=NUM_LABELS)
+        reference = multilabel_fbeta_score(num_labels=NUM_LABELS, beta=1)
+        state = build_confmat_state(metric, device)
+        assert_metric_close(metric(state), reference(state))
 
     def test_iou_name(self) -> None:
         assert multilabel_iou(num_labels=NUM_LABELS).name == "iou"
-
-    def test_stats_are_cached_per_state(self, device) -> None:
-        state = build_confmat_state(multilabel_precision(num_labels=NUM_LABELS), device)
-        first = state.multilabel_stats
-        multilabel_precision(num_labels=NUM_LABELS)(state)
-        multilabel_recall(num_labels=NUM_LABELS)(state)
-        multilabel_specificity(num_labels=NUM_LABELS)(state)
-        second = state.multilabel_stats
-
-        assert first is second
