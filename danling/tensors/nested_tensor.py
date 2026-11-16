@@ -4286,7 +4286,7 @@ class NestedTensor(torch.Tensor):
                 element_shapes=element_shapes,
                 ragged_offsets=(offsets,),
             )
-            if torch.is_grad_enabled() and values.requires_grad:
+            if _needs_packed_bridge(values):
                 return _PackedLikeAutograd.apply(values, _PackedStructureReference(result, mark_dynamic=True))
             return result
 
@@ -4819,8 +4819,8 @@ class NestedTensor(torch.Tensor):
         )
         result._exact_ragged_maxima = self._exact_ragged_maxima
         self._inherit_tangent_metadata(result)
-        if torch.is_grad_enabled() and packed_values.requires_grad:
-            return _PackedLikeAutograd.apply(packed_values, _PackedStructureReference(result))
+        if _is_compiling() or _needs_packed_bridge(packed_values):
+            return result._packed_like_unchecked(packed_values)
         return result
 
     def packed_with_lengths(self, packed_values: Tensor, lengths: Tensor) -> Self:
@@ -4952,8 +4952,8 @@ class NestedTensor(torch.Tensor):
         # New lengths own new maxima in both real and symbolic output schemas.
         result._exact_ragged_maxima = True
         result._ragged_extents = result._new_ragged_extents()
-        if torch.is_grad_enabled() and packed_values.requires_grad:
-            return _PackedLikeAutograd.apply(packed_values, _PackedStructureReference(result))
+        if _is_compiling() or _needs_packed_bridge(packed_values):
+            return result._packed_like_unchecked(packed_values)
         return result
 
     def packed_with_square_lengths(self, packed_values: Tensor, lengths: Tensor) -> Self:
@@ -5109,8 +5109,8 @@ class NestedTensor(torch.Tensor):
         result._exact_ragged_maxima = True
         if symbolic_lengths:
             result._ragged_extents = result._new_ragged_extents()
-        if torch.is_grad_enabled() and packed_values.requires_grad:
-            return _PackedLikeAutograd.apply(packed_values, _PackedStructureReference(result))
+        if _is_compiling() or _needs_packed_bridge(packed_values):
+            return result._packed_like_unchecked(packed_values)
         return result
 
     def packed_with_rectangular_lengths(
@@ -5255,8 +5255,8 @@ class NestedTensor(torch.Tensor):
         # Both independent data-derived maxima belong to the current layout.
         result._exact_ragged_maxima = True
         result._ragged_extents = result._new_ragged_extents()
-        if torch.is_grad_enabled() and packed_values.requires_grad:
-            return _PackedLikeAutograd.apply(packed_values, _PackedStructureReference(result))
+        if _is_compiling() or _needs_packed_bridge(packed_values):
+            return result._packed_like_unchecked(packed_values)
         return result
 
     def nested_like(self, tensor: Tensor, strict: bool = True) -> NestedTensor:
@@ -5312,7 +5312,7 @@ class NestedTensor(torch.Tensor):
         values = self._dense_to_packed_values(tensor)
         if values is not None:
             element_shapes = self._element_shapes
-            return self.__class__._from_packed_raw(
+            result = self.__class__._from_packed_raw(
                 values,
                 self._offsets,
                 self._physical_shape,
@@ -5327,6 +5327,9 @@ class NestedTensor(torch.Tensor):
                 element_shapes=element_shapes,
                 validate=False,
             )
+            if _is_compiling() or _needs_packed_bridge(values):
+                return result._packed_like_unchecked(values)
+            return result
         dense_tensor = tensor.to(device=self.device)
         element_shapes = self._original_shapes()
         new_storage = []

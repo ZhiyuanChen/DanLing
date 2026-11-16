@@ -43,6 +43,40 @@ TORCH_VERSION = Version(torch.__version__.split("+")[0])
 
 
 class TestFunctionTransforms:
+
+    @pytest.mark.parametrize(
+        "factory", ["static_tail", "lengths", "square_lengths", "rectangular_lengths", "concatenated"]
+    )
+    def test_factory_grad(self, device, factory):
+        reference = NT([torch.empty(2, device=device), torch.empty(3, device=device)])
+        lengths, columns = torch.tensor([2, 3]), torch.tensor([3, 2])
+        count = 13 if factory == "square_lengths" else 12 if factory == "rectangular_lengths" else 5
+        values = torch.full((count, 3), 0.2, device=device, dtype=torch.double)
+
+        def loss(packed):
+            if factory == "static_tail":
+                result = reference.packed_with_static_tail(packed)
+            elif factory == "lengths":
+                result = reference.packed_with_lengths(packed, lengths)
+            elif factory == "square_lengths":
+                result = reference.packed_with_square_lengths(packed, lengths)
+            elif factory == "rectangular_lengths":
+                result = reference.packed_with_rectangular_lengths(packed, lengths, columns)
+            else:
+                result = NT.from_concatenated(packed, (torch.Size((2, 3)), torch.Size((3, 3))), ragged_dims=(0,))
+            return result.values().square().sum()
+
+        gradient = torch.func.grad(loss)
+        assert_close(loss(values), values.square().sum())
+        assert_close(gradient(values), 2 * values)
+        assert_close(torch.func.grad(lambda packed: gradient(packed).sum())(values), torch.full_like(values, 2))
+        batch = torch.stack((values, values + 1))
+        assert_close(torch.vmap(gradient)(batch), 2 * batch)
+        with torch.autograd.forward_ad.dual_level():
+            dual = torch.autograd.forward_ad.make_dual(values, torch.ones_like(values))
+            _, tangent = torch.autograd.forward_ad.unpack_dual(loss(dual))
+            assert_close(tangent, 2 * values.sum())
+
     @pytest.mark.parametrize("backend", ["eager", "aot_eager", "inductor"])
     @pytest.mark.parametrize("mode", ["batch", "static_jvp"])
     def test_compiled_vmap_shape(self, device, backend, mode):
@@ -3346,6 +3380,47 @@ class TestCopySemantics:
 
 
 class TestFromFactoryMethods:
+
+    @pytest.mark.parametrize("batch_first", [True, False])
+    @pytest.mark.parametrize("requires_grad", [False, True])
+    @pytest.mark.parametrize("grad_enabled", [False, True])
+    def test_nested_like_forward_ad(self, device, batch_first, requires_grad, grad_enabled):
+        reference = NT(
+            [torch.empty(length, 3, device=device) for length in (2, 4)],
+            ragged_dims=(0,),
+            batch_first=batch_first,
+        )
+        source = torch.arange(24, device=device, dtype=torch.double).reshape(2, 4, 3) / 10
+        if not batch_first:
+            source = source.transpose(0, 1)
+        source.requires_grad_(requires_grad)
+        direction = torch.full_like(source, 2, requires_grad=requires_grad)
+        expected_source = source.detach().clone().requires_grad_(requires_grad)
+        expected_direction = direction.detach().clone().requires_grad_(requires_grad)
+
+        def pack(value):
+            return torch.cat([value.select(0 if batch_first else 1, i)[:length] for i, length in enumerate((2, 4))])
+
+        with torch.set_grad_enabled(grad_enabled), torch.autograd.forward_ad.dual_level():
+            dual = torch.autograd.forward_ad.make_dual(source, direction)
+            expected_dual = torch.autograd.forward_ad.make_dual(expected_source, expected_direction)
+            actual = torch.autograd.forward_ad.unpack_dual(reference.nested_like(dual).square().values())
+            expected = torch.autograd.forward_ad.unpack_dual(pack(expected_dual).square())
+            assert actual.tangent is not None
+            assert_close(actual, expected)
+            if requires_grad and grad_enabled:
+                for actual_value, expected_value in zip(actual, expected):
+                    assert_close(
+                        torch.autograd.grad(
+                            actual_value.sum(), (source, direction), allow_unused=True, retain_graph=True
+                        ),
+                        torch.autograd.grad(
+                            expected_value.sum(),
+                            (expected_source, expected_direction),
+                            allow_unused=True,
+                            retain_graph=True,
+                        ),
+                    )
 
     def test_mask_batch_selection_respects_layout_and_dtype(self):
         padded = torch.arange(24.0).reshape(3, 2, 4)
