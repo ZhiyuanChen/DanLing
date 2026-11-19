@@ -26,11 +26,9 @@ from danling.tensors import (
     NestedTensor,
     PNTensor,
     register_pn_tensor_collate,
-)
-from danling.tensors import tensor as pn_tensor
-from danling.tensors import (
     unregister_pn_tensor_collate,
 )
+from danling.tensors import tensor as pn_tensor
 from tests.tensors.utils import assert_close
 
 
