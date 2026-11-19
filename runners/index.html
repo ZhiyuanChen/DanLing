@@ -1808,7 +1808,9 @@ or implement <code>model.compile_regions()</code> with the same mapping. Groups 
 after model transforms and activation-checkpoint wrapping, and use the existing
 shared-cache <code>Compiler.compile_modules</code>; module identities, state-dict names, and
 call hooks remain intact. Unselected modules stay eager. Compilation still
-requires <code>compile.enabled=True</code>; <code>GraphRunner</code> retains its whole-step boundary.</p>
+requires <code>compile.enabled=True</code>. For the default <code>GraphRunner</code> step,
+<code>compile.fullgraph</code> applies to the model and loss together. When the compiler
+backend compiles the backward, native autograd invokes it.</p>
 <p>For named activation-checkpoint boundaries, set
 <code>activation_checkpoint.enabled=True</code> and <code>activation_checkpoint.regions=["blocks"]</code>
 instead of <code>module_classes</code>. Override <code>activation_checkpoint_regions(model)</code> or
