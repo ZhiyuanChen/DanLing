@@ -24,7 +24,7 @@ import os
 from collections.abc import Callable, Mapping, Sequence
 from functools import cached_property
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, TypeVar
 from warnings import warn
 
 import torch
@@ -33,18 +33,30 @@ from torch import nn
 from .torch_runner import TorchRunner
 
 GraphTrainStepFn = Callable[[Any, Any, torch.Tensor], tuple[Any, torch.Tensor, tuple[Optional[torch.Tensor], ...]]]
+_ForwardLossFn = Callable[[Any, Any, torch.Tensor], tuple[Any, torch.Tensor, torch.Tensor]]
+_GraphFn = TypeVar("_GraphFn", bound=Callable[..., Any])
+
+
+class _GraphTrainStep:
+    def __init__(self, forward_loss: _ForwardLossFn, params: Sequence[nn.Parameter]) -> None:
+        self.forward_loss = forward_loss
+        self.params = tuple(params)
+
+    def __call__(self, inputs: Any, target: Any, loss_scale: torch.Tensor):
+        pred, loss, scaled_loss = self.forward_loss(inputs, target, loss_scale)
+        grads = torch.autograd.grad(scaled_loss, self.params, allow_unused=True, materialize_grads=False)
+        return pred, loss, grads
 
 
 class GraphRunner(TorchRunner):
     """
-    Experimental runner that captures the default training micro-step as one graph unit.
+    Experimental runner that compiles the model and loss of a training micro-step.
 
     `GraphRunner` keeps `TorchRunner`'s outer loop, checkpointing, metrics,
-    optimizer stepping, and override surface, but replaces the default
-    `train_step` body with a forward/loss/backward graph. The graph returns
-    gradients explicitly via `torch.autograd.grad`; the runner then accumulates
-    those gradients on parameters and delegates optimizer flushing to
-    `TorchRunner.step()`.
+    optimizer stepping, and override surface. Native `torch.autograd.grad`
+    invokes the compiled backward when supported by the backend. The runner
+    accumulates those gradients and delegates optimizer flushing to `TorchRunner.step()`.
+    For the default step, `compile.fullgraph` applies to the model and loss callable.
 
     This is intentionally narrower than `ParallelRunner`: it is the place for
     graph-level compile/cache experiments without changing the eager runner
@@ -68,7 +80,7 @@ class GraphRunner(TorchRunner):
     def _validate_graph_runtime_config(self) -> None:
         if self.config.compile.enabled and self.config.compile.regions:
             raise ValueError(
-                "GraphRunner compiles whole steps; named model compile regions use TorchRunner/ParallelRunner"
+                "GraphRunner compiles at the step level; named model regions use TorchRunner/ParallelRunner"
             )
         if self.distributed:
             raise NotImplementedError("GraphRunner does not yet support distributed execution")
@@ -87,7 +99,7 @@ class GraphRunner(TorchRunner):
         """
         Move the model to device without compiling it as a standalone module.
 
-        GraphRunner compiles the forward/loss/backward step, so compiling the
+        GraphRunner compiles the model and loss together, so compiling the
         model here would double-wrap the hot path and obscure the graph cache
         boundary.
         """
@@ -244,12 +256,13 @@ class GraphRunner(TorchRunner):
 
     def build_graph_train_step(self, params: Sequence[nn.Parameter]) -> GraphTrainStepFn:
         """
-        Build the callable captured by `GraphRunner.train_step`.
+        Build the training callable used by `GraphRunner.train_step`.
 
         Override this when the default graph body is too narrow but the outer
         runner behavior should stay intact. The returned callable receives
         `(inputs, target, loss_scale)` and must return `(pred, loss, grads)`,
-        where `grads` lines up with `params`.
+        where `grads` lines up with `params`. A custom callable is passed to
+        `torch.compile` when compilation is enabled.
         """
         if self.model is None:
             raise ValueError("cannot build graph train step: model is not initialized")
@@ -258,25 +271,18 @@ class GraphRunner(TorchRunner):
 
         model = self.model
         criterion = self.criterion
-        params = tuple(params)
 
-        def forward_loss_grad(inputs: Any, target: Any, loss_scale: torch.Tensor):
+        def forward_loss(inputs: Any, target: Any, loss_scale: torch.Tensor):
             pred = model(**inputs) if isinstance(inputs, Mapping) else model(inputs)
             loss = criterion(pred, target)
             if loss is None:
                 raise ValueError("cannot run train_step: criterion did not produce a loss")
             scaled_loss = loss * loss_scale.to(device=loss.device, dtype=loss.dtype)
-            grads = torch.autograd.grad(
-                scaled_loss,
-                params,
-                allow_unused=True,
-                materialize_grads=False,
-            )
-            return pred, loss, grads
+            return pred, loss, scaled_loss
 
-        return forward_loss_grad
+        return _GraphTrainStep(forward_loss, params)
 
-    def _compile_graph_train_step(self, fn: GraphTrainStepFn) -> GraphTrainStepFn:
+    def _compile_graph_train_step(self, fn: _GraphFn) -> _GraphFn:
         if not self.compiler.enabled:
             return fn
         if not hasattr(torch, "compile"):
@@ -292,7 +298,11 @@ class GraphRunner(TorchRunner):
     @cached_property
     def graph_train_step(self) -> GraphTrainStepFn:
         """Compiled or eager graph callable used by `train_step`."""
-        return self._compile_graph_train_step(self.build_graph_train_step(self.graph_train_step_params))
+        step = self.build_graph_train_step(self.graph_train_step_params)
+        if isinstance(step, _GraphTrainStep):
+            # Calling autograd.grad inside the trace can make Dynamo skip the entire step.
+            return _GraphTrainStep(self._compile_graph_train_step(step.forward_loss), step.params)
+        return self._compile_graph_train_step(step)
 
     def _accumulate_graph_gradients(
         self,
@@ -311,10 +321,10 @@ class GraphRunner(TorchRunner):
         """
         Run one graph-backed training micro-step.
 
-        The default batch contract is the same as `TorchRunner.train_step`, but
-        forward, criterion, and backward-gradient construction are captured as a
-        single callable. Metrics, accumulation counters, optimizer stepping,
-        logging, and checkpoint cadence stay in the Python runner loop.
+        The default batch contract is the same as `TorchRunner.train_step`.
+        The compiled forward and loss feed the native autograd call. Metrics,
+        accumulation counters, optimizer stepping, logging, and checkpoint cadence
+        stay in the Python runner loop.
         """
         data = self.to_device(data)
         with self.train_context():
