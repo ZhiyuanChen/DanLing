@@ -3082,6 +3082,29 @@ class TestPackedWithSquareLengths:
 
             assert_close(packed_values.grad, 2 * packed_values)
 
+    @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
+    def test_fullgraph_permuted_return_backward(self, device, backend):
+        reference = NestedTensor([torch.empty(1) for _ in range(3)])
+
+        def permute(ref, values, lengths):
+            return ref.packed_with_square_lengths(values, lengths).permute(0, 3, 1, 2, 4)
+
+        compiled = torch.compile(permute, backend=backend, fullgraph=True, dynamic=True)
+        for lengths in ((0, 3, 2), (2, 6, 1)):
+            areas = [length**2 for length in lengths]
+            values = torch.randn(sum(areas), 2, 4, device=device, requires_grad=True)
+            actual = compiled(reference, values, torch.tensor(lengths))
+            expected = [
+                part.reshape(length, length, 2, 4).permute(2, 0, 1, 3)
+                for part, length in zip(values.split(areas), lengths)
+            ]
+            torch.testing.assert_close(actual.unbind(), expected)
+            probes = [torch.randn_like(part) for part in expected]
+            torch.testing.assert_close(
+                torch.autograd.grad(sum((part * probe).sum() for part, probe in zip(actual.unbind(), probes)), values),
+                torch.autograd.grad(sum((part * probe).sum() for part, probe in zip(expected, probes)), values),
+            )
+
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
     def test_compiled_length_errors(self):
         reference = NestedTensor([torch.empty(1), torch.empty(1)])

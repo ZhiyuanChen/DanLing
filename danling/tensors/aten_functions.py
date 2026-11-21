@@ -7590,9 +7590,10 @@ def _prepare_native_alias_result(
             raise RuntimeError(f"Unsupported exact native view: {name}")
         _set_view_records(result, (*inherited, (name, parameters, original, target)))
 
-    # Symbolic producers must expose formal children before leaving their node.
-    # Ordinary eager integer records need no carrier allocation or index mapping.
-    if (
+    # AOT cotangents are transient layouts. Preserve the view records, but
+    # defer binding their virtual strides unless the wrapper is flattened.
+    # Other symbolic producers expose formal children before leaving the node.
+    if not getattr(source, "_is_aot_tangent", False) and (
         type(result._packed_values) is not Tensor
         or _get_current_dispatch_mode() is not None
         or torch._C._are_functorch_transforms_active()
