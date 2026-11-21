@@ -1071,6 +1071,71 @@ class TestAutogradViewLifetime:
                 torch.autograd.grad(sum(part.square().sum() for part in expected), references),
             )
 
+    @pytest.mark.parametrize("requires_grad", [False, True])
+    def test_compiled_external_permutation_input(self, device, requires_grad):
+        def run(*inputs):
+            query = inputs[0]
+            x, y, z, mask, bias = (value.values() for value in inputs)
+            result = (x + y * z) * mask[..., None, None] + bias.transpose(-2, -1)
+            return query.packed_like(result).values()
+
+        torch.compiler.reset()
+        execute = torch.compile(run, fullgraph=True, dynamic=True)
+        try:
+            for shapes, capacity in (
+                (((3, 3), (5, 5)), None),
+                (((5, 4), (7, 6)), (9, 11)),
+            ):
+                dtype = torch.float64 if requires_grad else torch.float32
+                if requires_grad:
+                    numeric_parts = [
+                        [
+                            torch.randn(2, 3, h, w, 2, 16, device=device, dtype=dtype, requires_grad=True)
+                            for h, w in shapes
+                        ]
+                        for _ in range(3)
+                    ]
+                    numerics = tuple(NT(parts, ragged_dims=(2, 3)).transpose(3, 4) for parts in numeric_parts)
+                    leaves = tuple(part for parts in numeric_parts for part in parts)
+                else:
+                    template = NT(
+                        [torch.empty(2, 3, h, w, 2, 16, device=device, dtype=dtype) for h, w in shapes],
+                        ragged_dims=(2, 3),
+                    ).transpose(3, 4)
+                    numerics = tuple(template.packed_like(torch.randn_like(template.values())) for _ in range(3))
+                mask_template = NT(
+                    [torch.empty(2, 3, h, w, dtype=torch.bool, device=device) for h, w in shapes],
+                    ragged_dims=(2, 3),
+                )
+                mask_values = torch.rand(mask_template.values().size(0), 1, 1, device=device) > 0.2
+                mask = NT.from_packed(
+                    mask_values.expand_as(mask_template.values()),
+                    mask_template.packed_offsets(),
+                    mask_template.element_sizes(),
+                    ragged_dims=(2, 3),
+                    outer_size=None if capacity is None else (len(shapes), 2, 3, *capacity),
+                ).transpose(-2, -1)
+                if capacity is not None:
+                    mask = mask.transpose(-2, -1).transpose(-2, -1)
+                    assert mask.shape[-2:] == capacity[::-1]
+                bias_parts = [
+                    torch.rand(1, 1, 1, 2, w, h, device=device, dtype=dtype, requires_grad=requires_grad)
+                    for h, w in shapes
+                ]
+                bias = NT(bias_parts, ragged_dims=(5, 4))
+                inputs = (*numerics, mask, bias)
+                expected, actual = run(*inputs), execute(*inputs)
+                torch.testing.assert_close(actual, expected)
+                if requires_grad:
+                    parameters = (*leaves, *bias_parts)
+                    probe = torch.randn_like(actual)
+                    torch.testing.assert_close(
+                        torch.autograd.grad(actual, parameters, probe),
+                        torch.autograd.grad(expected, parameters, probe),
+                    )
+        finally:
+            torch.compiler.reset()
+
     @pytest.mark.parametrize("leaf_first", [False, True])
     def test_compiled_loss_ownership(self, device, leaf_first):
         from torch._inductor.utils import fresh_cache

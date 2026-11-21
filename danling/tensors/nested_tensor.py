@@ -2637,10 +2637,42 @@ class NestedTensor(torch.Tensor):
         names, metadata = self.__tensor_flatten__()
         children = {name: tensor_visitor_fn(getattr(self, name)) for name in names}
         bindings = tuple(children[f"{self._VIEW_BINDING_PREFIX}{index}"] for index in range(len(self._view_bindings())))
-        sizes, strides, offset = geometry
-        sizes = tuple(_view_binding_value(bindings, reference) for reference in sizes)
-        strides = tuple(_view_binding_value(bindings, reference) for reference in strides)
-        offset = _view_binding_value(bindings, offset)
+        size_refs, stride_refs, offset_ref = geometry
+        operations = vars(self).get("_view_ops", ())
+        if operations and all(name == "permute" for name, *_ in operations):
+            # The base keeps each axis's symbolic source even when equal concrete
+            # extents share one symbol in the serialized geometry carriers.
+            sizes, strides = tuple(new_base.shape), new_base.stride()
+            mapped = []
+
+            def logical_layout(layout, sizes, strides):
+                rank = layout[-3]
+                geometry = (*sizes, *strides, *layout[-1][2 * rank :])
+                return _ViewLayout((*layout[:-1], geometry))
+
+            for name, axes, before, after in _decode_view_records(metadata["view_ops"], bindings):
+                before = logical_layout(before, sizes, strides)
+                sizes = tuple(sizes[axis] for axis in axes)
+                strides = tuple(strides[axis] for axis in axes)
+                mapped.append((name, axes, before, logical_layout(after, sizes, strides)))
+            # AOT must bind these same outer symbols through formal children
+            # when its runtime wrapper reconstructs an autograd view.
+            encoded, bindings, geometry, offset_ref = _encode_view_records(tuple(mapped), None, children["_offsets"])
+            children = {
+                name: value for name, value in children.items() if not name.startswith(self._VIEW_BINDING_PREFIX)
+            }
+            children.update({f"{self._VIEW_BINDING_PREFIX}{index}": value for index, value in enumerate(bindings)})
+            metadata = {
+                **metadata,
+                "view_ops": encoded,
+                "view_binding_count": len(bindings),
+                "view_output_geometry": geometry,
+                "view_offset_binding": offset_ref,
+            }
+        else:
+            sizes = tuple(_view_binding_value(bindings, reference) for reference in size_refs)
+            strides = tuple(_view_binding_value(bindings, reference) for reference in stride_refs)
+        offset = _view_binding_value(bindings, offset_ref)
         metadata = {**metadata, "requires_grad": False}
         values = children["_packed_values"]
         result = type(self).__tensor_unflatten__(
