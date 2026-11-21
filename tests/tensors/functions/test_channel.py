@@ -35,6 +35,33 @@ def _assert_vjp(actual, expected, parts, references):
 
 
 class TestChannel:
+
+    @pytest.mark.parametrize("lengths", [(7, 7), (7, 5)], ids=["uniform", "ragged"])
+    @pytest.mark.parametrize(
+        ("operation", "channels", "spatial_scale"),
+        [(F.channel_shuffle, 8, 1), (F.pixel_shuffle, 8, 1), (F.pixel_unshuffle, 4, 2)],
+        ids=["channel_shuffle", "pixel_shuffle", "pixel_unshuffle"],
+    )
+    def test_symmetrized_gradients(self, device, lengths, operation, channels, spatial_scale):
+        parts = [
+            torch.randn(
+                channels,
+                spatial_scale * length,
+                spatial_scale * length,
+                dtype=torch.float64,
+                device=device,
+                requires_grad=True,
+            )
+            for length in lengths
+        ]
+        references = [part.detach().clone().requires_grad_() for part in parts]
+        actual = operation(NT(parts), 2)
+        expected = [operation(part.unsqueeze(0), 2).squeeze(0) for part in references]
+        actual = (actual + actual.transpose(-2, -1)) / 2
+        expected = [(part + part.transpose(-2, -1)) / 2 for part in expected]
+
+        _assert_vjp(actual, expected, parts, references)
+
     @pytest.mark.parametrize("groups", [1, 4])
     @pytest.mark.parametrize("uniform", [False, True])
     def test_identity(self, device, groups, uniform):

@@ -1269,6 +1269,19 @@ class TestInterpolate:
         )
         assert_close(output, reference)
 
+    def test_interpolate_ragged_channels_view_gradients(self, device):
+        parts = [
+            torch.randn(channels, 3, 4, device=device, dtype=torch.float64, requires_grad=True) for channels in (2, 3)
+        ]
+        options = {"scale_factor": 2, "mode": "bilinear", "align_corners": False}
+        actual = F.interpolate(NT(parts), **options).transpose(-1, -2).unbind()
+        expected = [F.interpolate(part[None], **options)[0].transpose(-1, -2) for part in parts]
+        torch.testing.assert_close(actual, expected)
+        torch.testing.assert_close(
+            torch.autograd.grad(sum(part.square().sum() for part in actual), parts),
+            torch.autograd.grad(sum(part.square().sum() for part in expected), parts),
+        )
+
 
 @pytest.mark.usefixtures("isolated_compiler")
 class TestLinear:
@@ -2927,6 +2940,16 @@ class TestPad:
         output = F.pad(nt, (3, 5), value=0.25)
         reference = NT([F.pad(t, (3, 5), value=0.25) for t in nt], **reference_options(nt))
         assert_close(output, reference)
+
+    def test_ragged_pad_view_gradients(self, device):
+        parts = [torch.randn(4, length, device=device, dtype=torch.float64, requires_grad=True) for length in (5, 7)]
+        actual = F.pad(NT(parts), (1, 2), value=0.25).transpose(-1, -2).unbind()
+        expected = [F.pad(part, (1, 2), value=0.25).transpose(-1, -2) for part in parts]
+        torch.testing.assert_close(actual, expected)
+        torch.testing.assert_close(
+            torch.autograd.grad(sum(part.square().sum() for part in actual), parts),
+            torch.autograd.grad(sum(part.square().sum() for part in expected), parts),
+        )
 
 
 class TestPairwiseDistance:

@@ -29,6 +29,20 @@ from danling.tensors import NestedTensor as NT
 
 class TestPooling:
 
+    @pytest.mark.parametrize("function", [F.avg_pool2d, F.max_pool2d])
+    def test_transpose_gradient(self, device, check_pool, function):
+        inputs = [
+            torch.randn(3, size, size + 2, dtype=torch.float32, device=device, requires_grad=True) for size in (7, 5)
+        ]
+        check_pool(
+            inputs,
+            function,
+            output_transform=lambda value: value.transpose(-1, -2),
+            kernel_size=3,
+            stride=2,
+            padding=1,
+        )
+
     def test_average(self, device, check_pool):
         inputs = [
             torch.randn(3, 11, 13, device=device, requires_grad=True),

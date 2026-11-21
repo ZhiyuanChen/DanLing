@@ -22,7 +22,7 @@ def tolerances(device):
 
 @pytest.fixture
 def check_pool():
-    def check(inputs, function, **kwargs):
+    def check(inputs, function, *, output_transform=None, **kwargs):
         references = [value.detach().clone().requires_grad_() for value in inputs]
         actual = function(NestedTensor(inputs), **kwargs)
         expected = [function(value, **kwargs) for value in references]
@@ -30,7 +30,19 @@ def check_pool():
             actual, indices = actual
             expected, expected_indices = zip(*expected)
             torch.testing.assert_close(indices.unbind(), expected_indices)
+        if output_transform is not None:
+            actual = output_transform(actual)
+            expected = [output_transform(value) for value in expected]
         torch.testing.assert_close(actual.unbind(), expected)
+        if output_transform is not None:
+            probes = [
+                torch.linspace(-0.75, 1.25, value.numel(), dtype=value.dtype, device=value.device).reshape(value.shape)
+                for value in expected
+            ]
+            actual_gradients = torch.autograd.grad(actual.unbind(), inputs, grad_outputs=probes)
+            expected_gradients = torch.autograd.grad(expected, references, grad_outputs=probes)
+            torch.testing.assert_close(actual_gradients, expected_gradients)
+            return
         actual.values().sum().backward()
         sum(value.sum() for value in expected).backward()
         torch.testing.assert_close([value.grad for value in inputs], [value.grad for value in references])

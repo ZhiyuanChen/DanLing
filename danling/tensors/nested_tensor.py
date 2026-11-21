@@ -3675,11 +3675,11 @@ class NestedTensor(torch.Tensor):
         logical_shape = type(self)._logical_shape_from_physical_shape(shape, self._offsets, self.batch_first)
         return offsets, shape, logical_shape, packed_sizes, element_shapes
 
-    def _from_scalar_result_values(self, values: Tensor) -> Self:
+    def _from_scalar_result_values(self, values: Tensor, *, raw_output=False) -> Self:
         r"""Wrap one scalar per element using the canonical scalar-result metadata."""
         cls = type(self)
         offsets, shape, outer_size, packed_sizes, element_shapes = self._scalar_result_meta()
-        return cls._from_packed_raw(
+        result = cls._from_packed_raw(
             values,
             offsets,
             shape,
@@ -3692,6 +3692,7 @@ class NestedTensor(torch.Tensor):
             element_shapes=element_shapes,
             validate=False,
         )
+        return result if raw_output else result._packed_like_unchecked(values, reuse_wrapper=True)
 
     @classmethod
     def _cat_batch_packed(cls, tensors: Sequence[Self]) -> Self | None:
@@ -6488,7 +6489,7 @@ class NestedTensor(torch.Tensor):
             validate=False,
         )
         result._wrapper_grad_leaf = wrapper_leaf
-        return result
+        return result if wrapper_leaf else result._packed_like_unchecked(values, reuse_wrapper=True)
 
     def __deepcopy__(self, memo):
         r"""Deep copy: clone storage and preserve independent leaf ownership."""
@@ -6517,6 +6518,8 @@ class NestedTensor(torch.Tensor):
             validate=False,
         )
         result._wrapper_grad_leaf = wrapper_leaf
+        if not wrapper_leaf:
+            result = result._packed_like_unchecked(values, reuse_wrapper=True)
         memo[id(self)] = result
         return result
 
@@ -6656,7 +6659,7 @@ class NestedTensor(torch.Tensor):
 
     def pin_memory(self, device: torch.device | str | int | None = None) -> Self:
         r"""Pin the underlying tensor memory for faster host-to-device transfer."""
-        return type(self)._from_packed_raw(
+        return type(self).from_packed(
             self.values().pin_memory(device=device),
             self._offsets,
             self._physical_shape,

@@ -3475,7 +3475,9 @@ def _outer_size(
     return torch.Size(dims)
 
 
-def _packed_batch_slice(source: NestedTensor, start: int, length: int, op_name: str) -> NestedTensor:
+def _packed_batch_slice(
+    source: NestedTensor, start: int, length: int, op_name: str, *, raw_output=False
+) -> NestedTensor:
     r"""
     Keep ``length`` samples starting at ``start``, addressing packed rows rather than elements.
 
@@ -3492,8 +3494,9 @@ def _packed_batch_slice(source: NestedTensor, start: int, length: int, op_name: 
     physical_shape = source._physical_shape[start : start + length]  # noqa: E203
     element_shapes = source._element_shapes
     sliced_shapes = None if element_shapes is None else element_shapes[start : start + length]  # noqa: E203
-    return type(source)._from_packed_raw(
-        source.values().narrow(0, row_start, row_count),
+    values = source.values().narrow(0, row_start, row_count)
+    result = type(source)._from_packed_raw(
+        values,
         offsets,
         physical_shape,
         permutation=source._permutation,
@@ -3507,6 +3510,7 @@ def _packed_batch_slice(source: NestedTensor, start: int, length: int, op_name: 
         element_shapes=sliced_shapes,
         validate=False,
     )
+    return result if raw_output else result._packed_like_unchecked(values, reuse_wrapper=True)
 
 
 def _packed_static_slice(source: NestedTensor, dim_adj: int, start: int, length: int) -> NestedTensor:
@@ -3533,6 +3537,8 @@ def _packed_ragged_slice(
     dim_adj: int,
     starts: Sequence[int],
     lengths: Sequence[int],
+    *,
+    raw_output=False,
 ) -> NestedTensor:
     r"""
     Keep a per-sample span of the sole ragged dim, gathering the rows it names.
@@ -3568,8 +3574,9 @@ def _packed_ragged_slice(
             (*shape[:dim_adj], length, *shape[dim_adj + 1 :])  # noqa: E203
             for shape, length in zip(element_shapes, lengths)
         )
-    return type(source)._from_packed_raw(
-        source.values().index_select(0, rows),
+    values = source.values().index_select(0, rows)
+    result = type(source)._from_packed_raw(
+        values,
         new_offsets,
         physical_shape,
         permutation=source._permutation,
@@ -3583,9 +3590,12 @@ def _packed_ragged_slice(
         element_shapes=element_shapes,
         validate=False,
     )
+    return result if raw_output else result._packed_like_unchecked(values, reuse_wrapper=True)
 
 
-def _packed_uniform_ragged_slice(source: NestedTensor, dim_adj: int, start: int, length: int) -> NestedTensor:
+def _packed_uniform_ragged_slice(
+    source: NestedTensor, dim_adj: int, start: int, length: int, *, raw_output=False
+) -> NestedTensor:
     r"""
     Keep the same span of the sole ragged dim in every sample, reading no per-sample extent.
 
@@ -3601,8 +3611,9 @@ def _packed_uniform_ragged_slice(source: NestedTensor, dim_adj: int, start: int,
     physical_shape[:, dim_adj] = length
     batch_size = source._offsets.shape[0] - 1
     new_offsets = torch.arange(batch_size + 1, dtype=source._offsets.dtype, device=source._offsets.device) * length
-    return type(source)._from_packed_raw(
-        source.values().index_select(0, rows.reshape(-1)),
+    values = source.values().index_select(0, rows.reshape(-1))
+    result = type(source)._from_packed_raw(
+        values,
         new_offsets,
         physical_shape,
         permutation=source._permutation,
@@ -3616,6 +3627,7 @@ def _packed_uniform_ragged_slice(source: NestedTensor, dim_adj: int, start: int,
         element_shapes=None,
         validate=False,
     )
+    return result if raw_output else result._packed_like_unchecked(values, reuse_wrapper=True)
 
 
 def _packed_multi_ragged_slice(
@@ -6937,7 +6949,7 @@ def matrix_last2_to_scalar(func, args, kwargs):
         inside = (row_coords < rows.view(batch, 1, 1)) & (col_coords < cols.view(batch, 1, 1))
         eye = torch.eye(max_rows, max_cols, dtype=source.values().dtype, device=device).expand(batch, -1, -1)
         values = func(torch.where(inside, padded, eye), *args[1:], **kwargs)
-        return source._from_scalar_result_values(values)
+        return source._from_scalar_result_values(values, raw_output=True)
     out_values = func(source.values(), *args[1:], **kwargs)
     out_shape, packed_sizes, element_shapes = source._drop_trailing_physical_dims_meta(2)
     return _packed_with_shape(
@@ -7815,7 +7827,7 @@ def public_squeeze_native(self, dim=None):
         return operation(self, dim)
 
 
-def narrow_nested(source: NestedTensor, dim: int, start, length: int) -> NestedTensor:
+def narrow_nested(source: NestedTensor, dim: int, start, length: int, *, raw_output=False) -> NestedTensor:
     r"""
     Keep ``length`` positions of ``dim``, counting from ``start``.
 
@@ -7855,7 +7867,7 @@ def narrow_nested(source: NestedTensor, dim: int, start, length: int) -> NestedT
             start += batch_size
         if start < 0 or start + length > batch_size:
             raise RuntimeError(f"start ({start}) + length ({length}) exceeds dimension size ({batch_size}).")
-        return _packed_batch_slice(source, start, length, "torch.narrow")
+        return _packed_batch_slice(source, start, length, "torch.narrow", raw_output=raw_output)
 
     dim_adj = _translate_dim(source, dim)
     values_dim = _packed_static_dim(source, dim_adj)
@@ -7870,7 +7882,7 @@ def narrow_nested(source: NestedTensor, dim: int, start, length: int) -> NestedT
         if source._packed_sizes is None and _is_fake_tensor(source._offsets):
             if start < 0:
                 _compile_unsupported("torch.narrow", "a negative start needs each sample's own extent")
-            return _packed_uniform_ragged_slice(source, dim_adj, start, length)
+            return _packed_uniform_ragged_slice(source, dim_adj, start, length, raw_output=raw_output)
         extents = _resolved_packed_sizes(source, "torch.narrow")
         starts = []
         for position, extent in enumerate(extents):
@@ -7881,7 +7893,7 @@ def narrow_nested(source: NestedTensor, dim: int, start, length: int) -> NestedT
                     f"for NestedTensor element {position}."
                 )
             starts.append(resolved)
-        return _packed_ragged_slice(source, dim_adj, starts, [length] * len(starts))
+        return _packed_ragged_slice(source, dim_adj, starts, [length] * len(starts), raw_output=raw_output)
 
     if source._ragged_rank > 1 and dim_adj in source._varying_dims:
         rank = int(source._physical_shape.size(1))
@@ -7962,7 +7974,7 @@ def narrow(func, args, kwargs):
         physical_dim = _translate_dim(source, _normalize_dim(dim, source.dim()))
         values_dim = _physical_to_values_dim(source, physical_dim)
         return _static_slice_result(source, physical_dim, func(source.values(), values_dim, start, length))
-    result = narrow_nested(source, dim, start, length)
+    result = narrow_nested(source, dim, start, length, raw_output=True)
     if func is aten.narrow_copy.default and _normalize_dim(dim, source.dim()) == _get_batch_dim(source):
         return result._packed_like_unchecked(result.values().clone())
     return result
@@ -7984,7 +7996,7 @@ def _select_nested(source: NestedTensor, dim: int, index: int):
         extents = source._physical_shape[:, dim_adj]
         if bool(((index < -extents) | (index >= extents)).any()):
             raise IndexError(f"select(): index {index} is out of range for a NestedTensor element at dimension {dim}")
-        selected = narrow_nested(source, dim, index, 1)
+        selected = narrow_nested(source, dim, index, 1, raw_output=True)
         result = _packed_without_dim(selected, dim_adj, selected.values())
     return result
 
@@ -8085,7 +8097,7 @@ def slice_tensor(func, args, kwargs):
     if dim == _get_batch_dim(source):
         begin, end, stride = slice(start, stop, step).indices(len(source))
         if stride == 1:
-            return _packed_batch_slice(source, begin, builtins.max(end - begin, 0), "aten.slice")
+            return _packed_batch_slice(source, begin, builtins.max(end - begin, 0), "aten.slice", raw_output=True)
         return source[list(range(begin, end, stride))]
     dim_adj = _translate_dim(source, dim)
     if _has_single_packed_ragged_dim(source, dim_adj) and step == 1:
@@ -8094,7 +8106,11 @@ def slice_tensor(func, args, kwargs):
         extents = _transform_metadata(source._physical_shape[:, dim_adj]).tolist()
         spans = [slice(start, stop, step).indices(extent) for extent in extents]
         return _packed_ragged_slice(
-            source, dim_adj, [begin for begin, _, _ in spans], [builtins.max(end - begin, 0) for begin, end, _ in spans]
+            source,
+            dim_adj,
+            [begin for begin, _, _ in spans],
+            [builtins.max(end - begin, 0) for begin, end, _ in spans],
+            raw_output=True,
         )
     if source._ragged_rank > 1 and dim_adj in source._varying_dims:
         return _packed_multi_ragged_slice(source, dim_adj, slice(start, stop, step))

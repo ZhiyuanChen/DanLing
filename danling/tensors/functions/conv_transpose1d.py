@@ -1444,7 +1444,7 @@ def _spatial_tile_conv_transpose1d(
             tile_geometry_meta=tile_geometry_meta,
         )
 
-    return type(input)._from_packed_raw(
+    return type(input).from_packed(
         output_values,
         output_offsets,
         output_shape_tensor,

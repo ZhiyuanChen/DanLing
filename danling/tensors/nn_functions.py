@@ -3137,7 +3137,7 @@ def _pad_packed_variable_last_dim(input: NestedTensor, pad: tuple[int, ...], val
             )
         packed_sizes = tuple(int(size) for size in new_sizes.tolist())
 
-    return type(input)._from_packed_raw(
+    result = type(input)._from_packed_raw(
         output_values,
         new_offsets,
         shape_tensor,
@@ -3150,6 +3150,7 @@ def _pad_packed_variable_last_dim(input: NestedTensor, pad: tuple[int, ...], val
         packed_sizes=packed_sizes,
         element_shapes=element_shapes,
     )
+    return result._packed_like_unchecked(output_values, reuse_wrapper=True)
 
 
 def _can_pad_packed_variable_last_dim(input: NestedTensor, pad: tuple[int, ...]) -> bool:
@@ -3438,7 +3439,7 @@ def _interpolate_packed_static_spatial(input, *args, _fn=None, **kwargs):
     if input._element_shapes is not None:
         element_shapes = tuple((shape[0], *output_spatial) for shape in input._element_shapes)
 
-    return type(input)._from_packed_raw(
+    result = type(input)._from_packed_raw(
         output_values,
         input._offsets,
         output_shape,
@@ -3453,6 +3454,7 @@ def _interpolate_packed_static_spatial(input, *args, _fn=None, **kwargs):
         element_shapes=element_shapes,
         validate=False,
     )
+    return result._packed_like_unchecked(output_values, reuse_wrapper=True)
 
 
 def _interpolate_handler(input, *args, _fn=None, **kwargs):

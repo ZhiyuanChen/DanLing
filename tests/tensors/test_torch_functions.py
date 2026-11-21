@@ -2176,6 +2176,23 @@ class TestFlattenUnflatten:
             source.values().add_(7)
             torch.testing.assert_close(output.values(), source.values())
 
+    @pytest.mark.parametrize("batch_first", [True, False])
+    def test_dense_ragged_view_gradients(self, device, batch_first):
+        shapes = ((2, 3), (3, 2))
+        source = torch.randn(2, 6, device=device, dtype=torch.float64, requires_grad=True)
+        value = source if batch_first else source.transpose(0, 1)
+        template = NT([torch.empty(shape, device=device) for shape in shapes], batch_first=batch_first)
+        output = value.view_as(template)
+        batch_dim = 0 if batch_first else 1
+        actual = output.unbind(batch_dim)
+        torch.testing.assert_close(actual, [row.view(shape) for row, shape in zip(source, shapes)])
+        loss = sum(part.square().sum() for part in actual)
+        torch.testing.assert_close(torch.autograd.grad(loss, source)[0], 2 * source)
+
+        with torch.no_grad():
+            source.add_(1)
+        torch.testing.assert_close(output.unbind(batch_dim), [row.view(shape) for row, shape in zip(source, shapes)])
+
     def test_view_strides(self, device):
         uniform = NT([torch.arange(6.0, device=device), torch.arange(6.0, device=device)], ragged_dims=(0,))
         dense_reference = torch.empty(3, 2, device=device)
@@ -3136,6 +3153,18 @@ class TestIndexingWriteOps:
 
 
 class TestInnerProducts:
+
+    @pytest.mark.parametrize("operation", [torch.dot, torch.vdot])
+    def test_view_of_scalar_results_gradients(self, device, operation):
+        left = [torch.randn(length, device=device, dtype=torch.float64, requires_grad=True) for length in (3, 5)]
+        right = [torch.randn_like(part, requires_grad=True) for part in left]
+        actual = operation(NT(left), NT(right)).unsqueeze(-1).unbind()
+        expected = [operation(lhs, rhs).unsqueeze(-1) for lhs, rhs in zip(left, right)]
+        torch.testing.assert_close(actual, expected)
+        torch.testing.assert_close(
+            torch.autograd.grad(sum(part.square().sum() for part in actual), (*left, *right)),
+            torch.autograd.grad(sum(part.square().sum() for part in expected), (*left, *right)),
+        )
 
     @pytest.mark.parametrize("batch_first", [True, False])
     def test_pairwise_outer_and_addr(self, batch_first):
@@ -4623,6 +4652,17 @@ class TestMatrixMultiplication:
 
 class TestMatrixOps:
     """Tests for matrix/linalg ops registered in torch_functions.py."""
+
+    @pytest.mark.parametrize("operation", [torch.det, torch.linalg.det])
+    def test_view_of_determinants_gradients(self, device, operation):
+        parts = [torch.randn(n, n, device=device, dtype=torch.float64, requires_grad=True) for n in (2, 3)]
+        actual = operation(NT(parts)).unsqueeze(-1).unbind()
+        expected = [operation(part).unsqueeze(-1) for part in parts]
+        torch.testing.assert_close(actual, expected)
+        torch.testing.assert_close(
+            torch.autograd.grad(sum(part.square().sum() for part in actual), parts),
+            torch.autograd.grad(sum(part.square().sum() for part in expected), parts),
+        )
 
     def test_det(self, device, float_dtype):
         a = torch.randn(3, 3, device=device, dtype=float_dtype)
@@ -7484,6 +7524,19 @@ class TestPackedStaticTailEinsum:
 
 class TestPackedMixedBroadcast:
 
+    def test_different_ragged_axes_view_gradients(self, device):
+        parts = [torch.randn(length, 1, device=device, dtype=torch.float64, requires_grad=True) for length in (3, 5)]
+        source = NT(parts)
+        first, second = torch.broadcast_tensors(source, source.transpose(-1, -2))
+        actual = first.transpose(-1, -2).unbind() + second.transpose(-1, -2).unbind()
+        pairs = [torch.broadcast_tensors(part, part.transpose(-1, -2)) for part in parts]
+        expected = [pair[index].transpose(-1, -2) for index in range(2) for pair in pairs]
+        torch.testing.assert_close(actual, expected)
+        torch.testing.assert_close(
+            torch.autograd.grad(sum(part.square().sum() for part in actual), parts),
+            torch.autograd.grad(sum(part.square().sum() for part in expected), parts),
+        )
+
     @pytest.mark.parametrize("from_packed", [False, True])
     @pytest.mark.parametrize("lengths", [(3, 5), (0, 5), (3, 3)])
     def test_sequence_tokens_batch_row_mask(self, device, from_packed, lengths):
@@ -8187,10 +8240,14 @@ class TestGather:
             torch.index_select(reference, 0, index).sum().backward()
             torch.testing.assert_close(element.grad, reference.grad)
 
-    def test_repeated_batch_gradients(self):
+    @pytest.mark.parametrize("transpose", [False, True])
+    def test_repeated_batch_gradients(self, transpose):
         elements = [element.requires_grad_() for element in _element_values([(3, 4), (5, 4), (2, 4)])]
 
-        torch.index_select(NT(elements), 0, torch.tensor([2, 0, 2])).values().sum().backward()
+        output = torch.index_select(NT(elements), 0, torch.tensor([2, 0, 2]))
+        if transpose:
+            output = output.transpose(-1, -2)
+        output.values().sum().backward()
 
         torch.testing.assert_close(elements[2].grad, torch.full((2, 4), 2.0))
         torch.testing.assert_close(elements[0].grad, torch.ones(3, 4))
@@ -9467,6 +9524,30 @@ class TestNarrow:
 
 
 class TestSplitFamily:
+
+    @pytest.mark.parametrize("operation", [torch.split, torch.chunk, torch.tensor_split, torch.narrow])
+    @pytest.mark.parametrize("dim", [0, 1])
+    def test_view_gradients(self, device, operation, dim):
+        parts = [torch.randn(length, 4, device=device, dtype=torch.float64, requires_grad=True) for length in (5, 6)]
+
+        def select(value, axis):
+            if operation is torch.narrow:
+                return operation(value, axis, 0, 1)
+            argument = 3 if operation is torch.split else 2
+            return operation(value, argument, dim=axis)[0]
+
+        source = NT(parts)
+        actual = select(source, dim).transpose(-1, -2).unbind()
+        if dim == 0:
+            selected = select(torch.arange(len(parts)), dim).tolist()
+            expected = [parts[index].transpose(-1, -2) for index in selected]
+        else:
+            expected = [select(part, dim - 1).transpose(-1, -2) for part in parts]
+        torch.testing.assert_close(actual, expected)
+        torch.testing.assert_close(
+            torch.autograd.grad(sum(part.square().sum() for part in actual), parts, materialize_grads=True),
+            torch.autograd.grad(sum(part.square().sum() for part in expected), parts, materialize_grads=True),
+        )
 
     @_split_case_params(_split_cases_named("leading-ragged", "batch-second"))
     def test_split_batch_dimension(self, case_id, shapes, metadata):

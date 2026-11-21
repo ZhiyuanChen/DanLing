@@ -25,7 +25,7 @@ from danling.tensors import NestedTensor as NT
 
 
 def _compare_conv_transpose1d(
-    device, dtype, tolerances, *, kernel_size, stride=1, padding=0, output_padding=0, dilation=1
+    device, dtype, tolerances, *, kernel_size, stride=1, padding=0, output_padding=0, dilation=1, transpose_output=False
 ):
     parts = [torch.randn(shape, device=device, dtype=dtype, requires_grad=True) for shape in [(3, 17), (3, 29)]]
     references = [part.detach().clone().requires_grad_() for part in parts]
@@ -36,6 +36,9 @@ def _compare_conv_transpose1d(
     kwargs = {"stride": stride, "padding": padding, "output_padding": output_padding, "dilation": dilation}
     actual = F.conv_transpose1d(NT(parts), weight, bias, **kwargs)
     expected = [F.conv_transpose1d(part, reference_weight, reference_bias, **kwargs) for part in references]
+    if transpose_output:
+        actual = actual.transpose(-1, -2)
+        expected = [part.transpose(-1, -2) for part in expected]
     atol, rtol = tolerances(dtype)
     torch.testing.assert_close(actual.unbind(), expected, atol=atol, rtol=rtol)
     probes = [torch.randn_like(part) for part in expected]
@@ -58,6 +61,9 @@ class TestConvolution:
         _compare_conv_transpose1d(
             device, float_dtype, kernel_size=3, stride=2, padding=1, output_padding=1, tolerances=tolerances
         )
+
+    def test_transposed_output_backward(self, device, tolerances):
+        _compare_conv_transpose1d(device, torch.float64, tolerances, kernel_size=3, stride=2, transpose_output=True)
 
     def test_output_padding(self, device, tolerances):
         _compare_conv_transpose1d(

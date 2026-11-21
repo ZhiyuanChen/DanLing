@@ -1755,23 +1755,22 @@ def _broadcast_nested_tensors_packed(tensors):
         values = _values_for(tensor, shapes)
         if values is None:
             return None
-        outputs.append(
-            type(tensor)._from_packed_raw(
-                values,
-                output_offsets,
-                output_shape,
-                permutation=output_permutation,
-                ragged_dims=output_ragged_dims,
-                batch_first=ref.batch_first,
-                padding_value=tensor.padding_value,
-                mask_value=tensor.mask_value,
-                pin_memory=tensor._pin_memory,
-                outer_size=output_logical_shape,
-                packed_sizes=packed_sizes,
-                element_shapes=output_shapes,
-                validate=False,
-            )
+        result = type(tensor)._from_packed_raw(
+            values,
+            output_offsets,
+            output_shape,
+            permutation=output_permutation,
+            ragged_dims=output_ragged_dims,
+            batch_first=ref.batch_first,
+            padding_value=tensor.padding_value,
+            mask_value=tensor.mask_value,
+            pin_memory=tensor._pin_memory,
+            outer_size=output_logical_shape,
+            packed_sizes=packed_sizes,
+            element_shapes=output_shapes,
+            validate=False,
         )
+        outputs.append(result._packed_like_unchecked(values, reuse_wrapper=True))
     return tuple(outputs)
 
 
@@ -2005,31 +2004,30 @@ def _split_like(input: NestedTensor, dim: int, spans_for, op_name: str):
         sole_ragged = _packed_sole_ragged_dim(input, dim_adj)
         outputs = []
         for start, length in spans_for(extent):
+            output: NestedTensor | None
             if sole_ragged:
-                outputs.append(
-                    type(input)._from_packed_raw(
-                        input.values(),
-                        input._offsets,
-                        input._physical_shape,
-                        permutation=input._permutation,
-                        ragged_dims=input._ragged_dims,
-                        batch_first=input.batch_first,
-                        padding_value=input.padding_value,
-                        mask_value=input.mask_value,
-                        pin_memory=input._pin_memory,
-                        outer_size=input._logical_shape_from_components(replace_dims={dim_adj: length}),
-                        packed_sizes=(),
-                        element_shapes=(),
-                        ragged_offsets=(input._offsets,),
-                        validate=False,
-                    )
+                output = type(input)._from_packed_raw(
+                    input.values(),
+                    input._offsets,
+                    input._physical_shape,
+                    permutation=input._permutation,
+                    ragged_dims=input._ragged_dims,
+                    batch_first=input.batch_first,
+                    padding_value=input.padding_value,
+                    mask_value=input.mask_value,
+                    pin_memory=input._pin_memory,
+                    outer_size=input._logical_shape_from_components(replace_dims={dim_adj: length}),
+                    packed_sizes=(),
+                    element_shapes=(),
+                    ragged_offsets=(input._offsets,),
+                    validate=False,
                 )
-                continue
-            selectors = [slice(None)] * int(input._physical_shape.size(1))
-            selectors[dim_adj] = slice(start, start + length)
-            output = input._empty_batch_basic_index(tuple(selectors))
+            else:
+                selectors = [slice(None)] * int(input._physical_shape.size(1))
+                selectors[dim_adj] = slice(start, start + length)
+                output = input._empty_batch_basic_index(tuple(selectors))
             assert output is not None
-            outputs.append(output)
+            outputs.append(output._packed_like_unchecked(output._packed_values, reuse_wrapper=True))
         return tuple(outputs)
 
     if _packed_sole_ragged_dim(input, dim_adj):
@@ -2920,7 +2918,10 @@ def index_select(input: NestedTensor, dim: int, index: Tensor):
     # every dimension, so there is nothing left for this level to decide.
     from .aten_functions import index_select as _aten_index_select
 
-    return _aten_index_select(torch.ops.aten.index_select.default, (input, dim, index), {})
+    output = _aten_index_select(torch.ops.aten.index_select.default, (input, dim, index), {})
+    if _normalize_dim(dim, input.dim()) == _get_batch_dim(input):
+        return output._packed_like_unchecked(output._packed_values, reuse_wrapper=True)
+    return output
 
 
 @NestedTensorFuncRegistry.implement(
@@ -6245,8 +6246,9 @@ def view_as(input, other):
         batched = input.movedim(batch_dim, 0)
         shape = tuple(batched.shape[1:])
         rows = shape[0] if shape else 1
+        values = batched.view(len(other) * rows, *shape[1:])
         input = type(other)._from_packed_raw(
-            batched.view(len(other) * rows, *shape[1:]),
+            values,
             other._offsets.new_tensor(range(len(other) + 1)) * rows,
             other._physical_shape.new_tensor(shape).reshape(1, -1).expand(len(other), -1).clone(),
             permutation=tuple(range(len(shape))),
@@ -6254,6 +6256,7 @@ def view_as(input, other):
             batch_first=other.batch_first,
             validate=False,
         )
+        input = input._packed_like_unchecked(values, reuse_wrapper=True)
     if not isinstance(other, NestedTensor):
         return _shape_view(input, "view", (tuple(other.shape),))
     result = _packed_view_shapes(

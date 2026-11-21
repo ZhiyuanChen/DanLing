@@ -2206,6 +2206,20 @@ class TestConstruction:
 
         assert nested.values().is_pinned()
 
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="pin_memory requires CUDA")
+    def test_pinned_view_gradients(self):
+        parts = [torch.randn(3, size, dtype=torch.float64, requires_grad=True) for size in (7, 5)]
+        pinned = NestedTensor(parts).pin_memory()
+        assert pinned.values().is_pinned()
+        actual = pinned.transpose(-1, -2).unbind()
+        expected = [part.pin_memory().transpose(-1, -2) for part in parts]
+        torch.testing.assert_close(actual, expected)
+
+        probes = [torch.randn_like(part) for part in expected]
+        actual_gradients = torch.autograd.grad(actual, parts, grad_outputs=probes)
+        expected_gradients = torch.autograd.grad(expected, parts, grad_outputs=probes)
+        torch.testing.assert_close(actual_gradients, expected_gradients)
+
 
 # Packed Reconstruction
 # ---------------------------------------------------------------------------
@@ -3222,6 +3236,23 @@ class TestToDtype:
 
 
 class TestCopySemantics:
+
+    @pytest.mark.parametrize("duplicate", [copy.copy, copy.deepcopy])
+    def test_nonleaf_view_gradients(self, device, duplicate):
+        parts = [torch.randn(length, 3, device=device, dtype=torch.float64, requires_grad=True) for length in (2, 4)]
+        source = NestedTensor(parts)
+        copied = duplicate(source)
+        output = copied.transpose(-1, -2).unbind()
+        torch.testing.assert_close(output, [part.transpose(-1, -2) for part in parts])
+        torch.testing.assert_close(
+            torch.autograd.grad(sum(part.square().sum() for part in output), parts),
+            [2 * part for part in parts],
+        )
+
+        with torch.no_grad():
+            copied.values().add_(1)
+        expected = [part + 1 if duplicate is copy.copy else part for part in parts]
+        torch.testing.assert_close(source.unbind(), expected)
 
     @pytest.mark.parametrize("batch_first", [False, True])
     def test_shape_checkpoint(self, batch_first, tmp_path, run_isolated):

@@ -77,6 +77,29 @@ class TestConvolution:
             tolerances=tolerances,
         )
 
+    def test_symmetric_output_backward(self, device):
+        def symmetric_conv(input, weight, bias):
+            output = F.conv_transpose2d(input, weight, bias, stride=2)
+            return (output + output.transpose(-1, -2)) / 2
+
+        dtype = torch.float64
+        parts = [torch.randn(16, size, size, device=device, dtype=dtype, requires_grad=True) for size in (9, 7, 5)]
+        weight = torch.randn(16, 8, 2, 2, device=device, dtype=dtype, requires_grad=True)
+        bias = torch.randn(8, device=device, dtype=dtype, requires_grad=True)
+        actual = symmetric_conv(NT(parts), weight, bias).unbind()
+        expected = [symmetric_conv(part, weight, bias) for part in parts]
+        torch.testing.assert_close(actual, expected)
+
+        probes = [torch.randn_like(part) for part in expected]
+        targets = (*parts, weight, bias)
+        actual_gradients = torch.autograd.grad(
+            sum((part * probe).sum() for part, probe in zip(actual, probes)), targets
+        )
+        expected_gradients = torch.autograd.grad(
+            sum((part * probe).sum() for part, probe in zip(expected, probes)), targets
+        )
+        torch.testing.assert_close(actual_gradients, expected_gradients)
+
     def test_autocast(self, device):
         if device.type != "cuda":
             pytest.skip("CUDA autocast")
