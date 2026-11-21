@@ -109,6 +109,72 @@ class TestClone:
             torch.testing.assert_close(source.values(), before)
 
 
+class TestConstantPadding:
+
+    @pytest.mark.parametrize("pad", [(1, 2), (-1, -2)])
+    @pytest.mark.parametrize("layout", ["ragged", "permuted_static", "static"])
+    def test_values_and_gradients(self, device, pad, layout):
+        shapes = [(4, length) if layout == "ragged" else (length, 5, 4) for length in (5, 7)]
+        parts = [torch.randn(shape, device=device, dtype=torch.float64, requires_grad=True) for shape in shapes]
+        references = [part.detach().clone().requires_grad_() for part in parts]
+        source = NT(parts)
+        reference_inputs = references
+        if layout == "permuted_static":
+            source = source.transpose(-1, -2)
+            reference_inputs = [part.transpose(-1, -2) for part in references]
+
+        operation = torch.ops.aten.constant_pad_nd.default
+        actual = operation(source, pad, 1.25)
+        expected = [operation(part, pad, 1.25) for part in reference_inputs]
+        torch.testing.assert_close(actual.unbind(), expected)
+
+        actual_parts = actual.transpose(-1, -2).unbind()
+        expected = [part.transpose(-1, -2) for part in expected]
+        probes = [torch.randn_like(part) for part in expected]
+        actual_grads = torch.autograd.grad(
+            sum((part * probe).sum() for part, probe in zip(actual_parts, probes)), parts
+        )
+        expected_grads = torch.autograd.grad(
+            sum((part * probe).sum() for part, probe in zip(expected, probes)), references
+        )
+        torch.testing.assert_close(actual_grads, expected_grads)
+
+    @pytest.mark.parametrize("pad", [(1, 2), (-1, -2)])
+    def test_batch_second_vector(self, device, pad):
+        parts = [torch.randn(length, device=device, requires_grad=True) for length in (5, 7)]
+        operation = torch.ops.aten.constant_pad_nd.default
+        actual = operation(NT(parts, batch_first=False), pad)
+        expected = [operation(part, pad) for part in parts]
+        assert actual.shape == (max(part.size(0) for part in expected), len(parts))
+        torch.testing.assert_close(actual.unbind(1), expected)
+        torch.testing.assert_close(
+            torch.autograd.grad(actual.values().square().sum(), parts),
+            torch.autograd.grad(sum(part.square().sum() for part in expected), parts),
+        )
+
+    @pytest.mark.parametrize("pad", [(1, 2), (-1, -2), (-7, 2), (2, -7)])
+    def test_empty_batch(self, device, pad):
+        parts = [torch.randn(4, length, device=device, requires_grad=True) for length in (5, 7)]
+        source = NT(parts)[:0]
+        operation = torch.ops.aten.constant_pad_nd.default
+        output = operation(source, pad)
+        expected = operation(torch.empty(source.shape, device=device), pad)
+        assert output.shape == expected.shape
+        assert output.unbind() == ()
+        torch.testing.assert_close(
+            torch.autograd.grad(output.values().sum(), parts),
+            tuple(torch.zeros_like(part) for part in parts),
+        )
+
+    @pytest.mark.parametrize("pad", [(-4, -4), (-8, 9)])
+    def test_invalid_empty_crop(self, device, pad):
+        source = NT([torch.empty(4, length, device=device) for length in (5, 7)])[:0]
+        operation = torch.ops.aten.constant_pad_nd.default
+        for tensor in (source, torch.empty(source.shape, device=device)):
+            with pytest.raises(RuntimeError, match="length must be non-negative"):
+                operation(tensor, pad)
+
+
 class TestElementwiseOps:
 
     @pytest.mark.parametrize("compiled", [False, True])

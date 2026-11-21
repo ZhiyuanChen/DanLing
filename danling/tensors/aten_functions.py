@@ -10532,7 +10532,7 @@ def clone(func, args, kwargs):
 
 @NestedTensorAtenRegistry.implement(aten.constant_pad_nd.default)
 def constant_pad_nd(func, args, kwargs):
-    r"""Compile-safe handler for constant padding on packed values when ragged dim is untouched."""
+    r"""Pad logical element dimensions, using packed values when their axes align."""
     source = args[0]
     pad = tuple(args[1])
     if len(pad) % 2 != 0:
@@ -10545,8 +10545,9 @@ def constant_pad_nd(func, args, kwargs):
             return output
 
     padded_dims = len(pad) // 2
-    # Packed fast path is valid only when padding targets trailing static dims.
-    if source.values().dim() <= 1 or padded_dims >= source.values().dim():
+    rank = source._physical_shape.size(1)
+    padded_axes = tuple(range(rank - padded_dims, rank))
+    if padded_dims and source._static_dims[-padded_dims:] != padded_axes:
         return per_element_fallback(func, args, kwargs)
 
     out_values = func(source.values(), *args[1:], **kwargs)
@@ -10566,9 +10567,9 @@ def constant_pad_nd(func, args, kwargs):
 
 
 def _constant_pad_packed_variable_last_dim(source: NestedTensor, pad: tuple[int, int], value) -> NestedTensor | None:
-    r"""Pad a packed ragged last physical dimension by inserting values between packed rows."""
+    r"""Pad a packed ragged last physical dimension, adjusting only geometry for empty batches."""
     left, right = int(pad[0]), int(pad[1])
-    if left < 0 or right < 0:
+    if (left < 0 or right < 0) and len(source):
         return None
     if left == 0 and right == 0:
         return source
@@ -10583,6 +10584,14 @@ def _constant_pad_packed_variable_last_dim(source: NestedTensor, pad: tuple[int,
         return None
     if source._element_shapes is not None and any(len(shape) != rank for shape in source._element_shapes):
         return None
+
+    physical_extents = source._max_physical_dims()
+    if left < 0 or right < 0:
+        # Empty batches retain a logical width; positive padding cannot repair an invalid crop.
+        torch._check(
+            physical_extents[target_dim] + min(left, 0) + min(right, 0) >= 0,
+            lambda: "narrow(): length must be non-negative.",
+        )
 
     pad_width = left + right
     batch_steps = torch.arange(len(source) + 1, dtype=source._offsets.dtype, device=source._offsets.device)
@@ -10614,7 +10623,7 @@ def _constant_pad_packed_variable_last_dim(source: NestedTensor, pad: tuple[int,
             )
         packed_sizes = tuple(int(size) for size in (new_offsets[1:] - new_offsets[:-1]).tolist())
 
-    outer_size = list(source._logical_shape)
+    outer_size = list(physical_extents)
     outer_size[-1] += pad_width
     return type(source)._from_packed_raw(
         output_values,
@@ -10626,7 +10635,7 @@ def _constant_pad_packed_variable_last_dim(source: NestedTensor, pad: tuple[int,
         padding_value=source.padding_value,
         mask_value=source.mask_value,
         pin_memory=source._pin_memory,
-        outer_size=torch.Size(outer_size),
+        outer_size=source._logical_shape_from_physical_dims(outer_size),
         packed_sizes=packed_sizes,
         element_shapes=element_shapes,
         validate=False,
