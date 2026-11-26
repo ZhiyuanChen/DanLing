@@ -1126,6 +1126,20 @@ class TestNestedViewAlignment:
 
 class TestCompile:
 
+    @pytest.mark.parametrize("fullgraph", [False, True])
+    def test_relative_offsets(self, device, fullgraph, isolated_compiler):
+        def offsets(index):
+            return index.unsqueeze(-1) - index.unsqueeze(-2)
+
+        parts = [torch.arange(length, device=device) for length in (3, 5)]
+        source = NT(parts, ragged_dims=(0,))
+        compiled = torch.compile(offsets, backend="aot_eager", fullgraph=fullgraph, dynamic=True)
+        with torch.inference_mode():
+            output = compiled(source)
+
+        assert output.shape == (2, 5, 5)
+        torch.testing.assert_close(output.unbind(), tuple(part[:, None] - part[None, :] for part in parts))
+
     @pytest.mark.parametrize("backend", [None, "aot_eager"])
     @pytest.mark.parametrize(
         "kind,reverse,batch_first",

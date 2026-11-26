@@ -1863,12 +1863,11 @@ class NestedTensor(torch.Tensor):
     @property
     def _exact_ragged_maxima(self) -> bool:
         r"""Whether retained ragged extents are proven current sample maxima."""
-        attrs = vars(self)
-        metadata = attrs.get("_physical_shape")
+        metadata = getattr(self, "_physical_shape", None)
         if metadata is None or metadata.is_inference():
             return False
         version = self._cache_version(metadata)
-        proof = attrs.get("_ragged_maxima_proof")
+        proof = getattr(self, "_ragged_maxima_proof", None)
         if proof is not None and proof[0] is metadata and proof[1] == version:
             return proof[2]
         if (
@@ -1881,8 +1880,8 @@ class NestedTensor(torch.Tensor):
             or metadata.dtype == torch.bool
             or torch._is_functional_tensor(metadata)
             or torch._C._functorch.is_functorch_wrapped_tensor(metadata)
-            or "_logical_shape" not in attrs
-            or "_ragged_dims" not in attrs
+            or not hasattr(self, "_logical_shape")
+            or not hasattr(self, "_ragged_dims")
         ):
             return False
         retained = self._max_physical_dims()
